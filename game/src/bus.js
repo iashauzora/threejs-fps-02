@@ -1,9 +1,8 @@
-// The hearing bus: one named channel for every noise the world makes.
-// Gunfire, explosions and the plant all emit here with a position, a team,
-// a carry radius and the game time; bot perception reads the bus (a bot
-// only reacts to fresh enemy noise inside its hearing), and the radio
-// module listens on the same bus, so a loud event can also become a
-// callout. Events live in one array, aged out by step() each tick.
+// The hearing bus: one channel for every noise the world makes. Gunfire,
+// explosions and the plant emit here with a position, a team, a carry
+// radius and the game time; bot perception reads the bus (a bot reacts only
+// to fresh enemy noise inside its hearing), and the radio listens on the
+// same bus, so a loud event can also become a callout. Aged out each tick.
 export function createBus() {
   const events = [];
   return {

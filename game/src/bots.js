@@ -1,15 +1,19 @@
 // Bot brains: perception, team plans and a small state machine per bot.
-// A bot perceives the world the way a player does — through a vision cone
-// with line-of-sight, and through hearing: every noise in the world is an
-// event on the hearing bus (bus.js), and a bot only reacts to fresh enemy
-// noise inside its range. Sightings are published to G.spotted (the HUD
-// minimap reads them) and called out on team radio (radio.js). Each round
-// the plan assigns named roles — attackers: entry (carries the charge),
-// support (flashes the site entry), flex (trades behind the entry), lurker
-// (mid, late); defenders: two anchors per site and a flex rotating through
-// mid. In a fight a bot fires disciplined bursts: its aim error grows while
-// it moves and shrinks when it stops, mirroring the spread model its
-// bullets obey.
+// A bot perceives the world the way a player does — a vision cone with
+// line-of-sight, plus hearing: every noise is an event on the hearing bus
+// (bus.js), and a bot reacts only to fresh enemy noise inside its range.
+// Sightings are published to G.spotted (the minimap reads them) and called
+// out on team radio (radio.js). Each round the plan assigns named roles —
+// attackers: entry (carries the charge), support (flashes the entry), flex
+// (trades), lurker (mid, late); defenders: two anchors per site, one flex
+// rotating through mid. In a fight a bot fires disciplined bursts: its aim
+// error grows while it moves, mirroring the spread model its bullets obey.
+// Plans are not fire-and-forget: the team re-plans mid-round at the two
+// moments the round's shape changes — when the carrier first steps onto
+// the plan site (the site-commit, in stepBot below) and when the charge is
+// planted (replanOnPlant, called by rounds.js). A re-plan is deliberately
+// mechanical — state, routes, one radio call — because the goals
+// themselves (attackGoal, plantedGoal) know what the new shape means.
 import * as THREE from 'three';
 import { SITES, HOLD_POINTS, findPath, makePathScratch, losClear, siteAt } from './map.js';
 import { eyePos, lookDir } from './actor.js';
@@ -28,19 +32,20 @@ const _scratch = makePathScratch();
 
 export function createBrain(actor, role) {
   return {
-    role,                    // movement family: 'attack' | 'defend' | 'mid' | 'lurk'
-    planRole: 'flex',        // named plan role: entry|support|flex|lurker|anchor
-    radioAt: 0,              // radio cooldown: next time a callout may go out
-    objCallAt: -99,          // last plant/defuse callout (channel can churn)
-    hurtCalled: false,       // the low-health callout went out this round
-    utilityUsed: false,      // the support's entry flash is spent this round
+    role,                 // movement family: 'attack' | 'defend' | 'mid' | 'lurk'
+    planRole: 'flex',     // named plan role: entry|support|flex|lurker|anchor
+    radioAt: 0,           // radio cooldown: next time a callout may go out
+    objCallAt: -99,       // last plant/defuse callout (channels can churn)
+    hurtCalled: false,    // the low-health callout went out this round
+    utilityUsed: false,   // the support's entry flash is spent this round
+    committed: false,     // the site-commit re-plan fired this round
     state: 'advance',
     targetPos: { x: actor.pos.x, z: actor.pos.z },
     holdPos: null,
-    enemy: null,             // actor currently engaged
+    enemy: null,          // actor currently engaged
     lastSeenPos: { x: 0, z: 0 },
     lastSeenAt: -99,
-    thinkAt: 0,              // next perception tick
+    thinkAt: 0,           // next perception tick
     burstLeft: 0,
     burstWait: 0,
     strafeDir: 1,
@@ -48,23 +53,21 @@ export function createBrain(actor, role) {
     aimYaw: actor.yaw,
     aimPitch: 0,
     hasCharge: false,
-    path: null,              // cached waypoint route to the current goal
+    path: null,           // cached waypoint route to the current goal
     pathGoalX: 0,
     pathGoalZ: 0,
-    channelAt: 0,            // plant/defuse progress handled by rounds.js
-    reactedAt: 0,            // when the current enemy was first seen
+    channelAt: 0,         // plant/defuse progress handled by rounds.js
+    reactedAt: 0,         // when the current enemy was first seen
     grenadeAt: 0,
   };
 }
 
-// Per-round team plans for the 5v5. Attackers pick a site and stack roles on
-// it: the entry carries the charge and leads, support plays behind him with
-// the entry flash, flex trades, the lurker works mid late. The human player
-// is the fifth attacker and plays free — a bot still carries. Defenders
-// split 2/2/1: two anchors on each site, one flex holding mid who rotates
-// to whichever site the noise bus reports. Called by rounds.js at every
-// round start; positions come from HOLD_POINTS so the defence sets up on
-// real angles, not on the objective itself.
+// Per-round team plans for the 5v5. Attackers pick a site and stack roles
+// on it: entry carries the charge and leads, support plays behind with the
+// entry flash, flex trades, the lurker works mid late. The human is the
+// fifth attacker and plays free — a bot still carries. Defenders split
+// 2/2/1: two anchors per site, one flex holding mid who rotates to the
+// site the noise bus reports. Called by rounds.js at round start.
 const ATTACK_ROLES = ['entry', 'support', 'flex', 'lurker'];
 export function assignPlans(G, rng) {
   const attackers = G.actors.filter((a) => a.team === 'ember');
@@ -83,6 +86,7 @@ export function assignPlans(G, rng) {
     a.bot.path = null;
     a.bot.hurtCalled = false;
     a.bot.utilityUsed = false;
+    a.bot.committed = false;
   });
   const DEFENCE = [
     { planRole: 'anchor', role: 'defend', pool: HOLD_POINTS.A },
@@ -101,7 +105,33 @@ export function assignPlans(G, rng) {
     a.bot.path = null;
     a.bot.hurtCalled = false;
     a.bot.utilityUsed = false;
+    a.bot.committed = false;
   });
+}
+
+// The post-plant re-plan, called by rounds.js when the charge goes down.
+// Defenders re-anchor on it: stale engagements dropped (a defender still
+// duelling at the other site is wasted), cached routes cleared so
+// plantedGoal's convergence re-draws from where each bot stands, perception
+// ticks at once, the mid flex's hold point moves to the planted site.
+// Attackers clear routes too, so the guard ring forms from current
+// positions. Both teams call the new shape — those calls are the plant's
+// announcement, which is why completePlant makes none of its own.
+export function replanOnPlant(G) {
+  const site = G.charge.site;
+  for (const a of G.actors) {
+    if (!a.bot) continue;
+    a.bot.path = null;
+    if (a.team === 'warden') {
+      a.bot.state = 'advance';
+      a.bot.enemy = null;
+      a.bot.thinkAt = 0;
+    }
+  }
+  const flex = G.actors.find((a) => a.team === 'warden' && a.bot && a.bot.role === 'mid');
+  if (flex && site) flex.bot.holdPos = HOLD_POINTS[site.id][2];
+  G.radio.teamSay('ember', 'Charge planted — hold positions');
+  G.radio.teamSay('warden', 'Charge is down — retake, now');
 }
 
 function visible(G, bot, other) {
@@ -152,8 +182,7 @@ function perceive(G, actor, dt) {
     if (bot.enemy !== best) {
       bot.enemy = best;
       bot.reactedAt = G.time;
-      // First contact is called on the radio and published as a spotting:
-      // the whole team (and the player's minimap) learns the zone.
+      // First contact is called on the radio and published as a spotting.
       G.radio.say(actor, `Contact ${zoneName(best.pos.x, best.pos.z)}!`);
     }
     bot.lastSeenPos.x = best.pos.x; bot.lastSeenPos.z = best.pos.z;
@@ -180,8 +209,31 @@ export function stepBot(G, actor, dt, wish) {
     G.radio.say(actor, "I'm hit — falling back");
   }
 
+  // Site-commit re-plan: the carrier's first step onto the plan site is the
+  // round's point of no return. The carrier calls it, every bot drops its
+  // cached route (escorts re-draw onto the site, anchors onto their posts),
+  // and the defence's mid flex re-anchors to the committed site's third hold
+  // point — the rotation the noise bus would eventually provoke starts now,
+  // on information the defence plausibly has. Once per round: bot.committed,
+  // reset in assignPlans.
+  if (actor.team === 'ember' && bot.hasCharge && phase === 'live' && !bot.committed) {
+    const here = siteAt(actor.pos.x, actor.pos.z);
+    if (here && here.id === G.plan.site) {
+      bot.committed = true;
+      G.radio.say(actor, `On site ${here.id} — converge!`, true);
+      for (const mate of G.actors) {
+        if (!mate.bot) continue;
+        mate.bot.path = null;
+        if (mate.team === 'warden' && mate.bot.role === 'mid') {
+          mate.bot.holdPos = HOLD_POINTS[here.id][2];
+          mate.bot.state = 'advance';
+        }
+      }
+    }
+  }
+
   // Support utility: the entry flash goes in just before the carrier hits
-  // the site — aimed over the plant spot, called on the radio, once a round.
+  // the site — over the plant spot, called on radio, once a round.
   if (bot.planRole === 'support' && !bot.utilityUsed && actor.team === 'ember' &&
       phase === 'live' && actor.loadout.grenades.includes('flash')) {
     const site = SITES[G.plan.site];
@@ -230,9 +282,9 @@ export function stepBot(G, actor, dt, wish) {
     if (dist > (goal.slow ? 0.4 : 0.9)) {
       let tx = goal.x, tz = goal.z;
       if (dist > 6 && !goal.slow) {
-        // Follow a cached route through the waypoint graph (see findPath):
-        // a fresh per-step hop can reverse at nearest-node boundaries and
-        // pin the bot; a cached route is followed node by node instead.
+        // Follow a cached route through the waypoint graph (findPath,
+        // map.js): a fresh per-step hop can reverse at nearest-node
+        // boundaries and pin the bot.
         if (!bot.path || Math.abs(bot.pathGoalX - goal.x) > 1.5 || Math.abs(bot.pathGoalZ - goal.z) > 1.5) {
           bot.path = findPath(actor.pos.x, actor.pos.z, goal.x, goal.z, _scratch);
           bot.pathGoalX = goal.x;
@@ -274,8 +326,8 @@ function turnToward(actor, targetYaw, dt, speed) {
   actor.yaw += THREE.MathUtils.clamp(d, -speed * dt, speed * dt);
 }
 
-// Where an attacker goes: the carrier and its escorts head for the plan site
-// (the lurker slips through mid), and once inside the site the carrier plants.
+// Where an attacker goes: carrier and escorts head for the plan site (the
+// lurker slips through mid); inside the site, the carrier plants.
 function attackGoal(G, actor) {
   const bot = actor.bot;
   const site = SITES[G.plan.site];
@@ -308,8 +360,8 @@ function defendGoal(G, actor) {
   return bot.holdPos || { x: actor.pos.x, z: actor.pos.z };
 }
 
-// After the plant: attackers guard the charge from the site's edges,
-// defenders converge — the nearest starts the defuse, the rest cover.
+// After the plant: attackers guard the charge from the site's edges;
+// defenders converge — the nearest defuses, the rest cover.
 function plantedGoal(G, actor) {
   const bot = actor.bot;
   const charge = G.charge;
@@ -357,9 +409,8 @@ function combatMove(G, actor, dt, wish) {
 }
 
 // Aiming and trigger discipline, plus grenade judgement. Aim tracks the
-// enemy's chest with a skill-based error that decays after first sight (the
-// reaction window), then bursts of 3–5 with pauses — and the same spread
-// model as a human's bullets punishes firing mid-strafe.
+// enemy's chest with an error that decays after first sight (the reaction
+// window), then bursts of 3–5 with pauses.
 function combatAct(G, actor, dt) {
   const bot = actor.bot;
   const inst = activeInstance(actor);
@@ -371,12 +422,11 @@ function combatAct(G, actor, dt) {
   if (G.time - bot.lastSeenAt > 0.35) return; // only fire on fresh information
   if (actor.blindTime > 0.3) return;
 
-  // Aim: lead the chest slightly, with error that shrinks as the bot settles.
+  // Aim at the chest, with angular error wide just after first sight and
+  // tightening as the bot settles — the offset grows with range.
   eyePos(actor, _eye);
   _targetEye.set(foe.pos.x, foe.pos.y + (foe.crouch ? 0.95 : 1.25), foe.pos.z);
   const settle = Math.min(1, (G.time - bot.reactedAt) / 0.7);
-  // Angular error (radians): wide just after first sight, tightening as the
-  // bot settles — so the offset at the target grows with range, like a human's.
   const errRad = (1 - settle) * 0.045 + 0.010 + Math.min(0.02, actor.speedNow * 0.004);
   const aimDist = actor.pos.distanceTo(foe.pos);
   _targetEye.x += (G.rng.next() - 0.5) * 2 * errRad * aimDist;
@@ -389,9 +439,8 @@ function combatAct(G, actor, dt) {
   turnToward(actor, targetYaw, dt, 7.5);
   actor.pitch += THREE.MathUtils.clamp(targetPitch - actor.pitch, -5 * dt, 5 * dt);
 
-  // A grenade before the first burst, when the enemy is mid-range: a frag
-  // onto the spotted position if the bot carries one. The support's flash
-  // is saved for the site entry (see stepBot) and never spent here.
+  // A grenade before the first burst at mid-range, if the bot carries one.
+  // The support's flash is saved for the site entry (stepBot), never here.
   if (bot.grenadeAt < G.time && actor.loadout.grenades.length && settle >= 1) {
     const dist = actor.pos.distanceTo(foe.pos);
     const kind = actor.loadout.grenades.includes('frag') ? 'frag' : actor.loadout.grenades[0];
@@ -412,9 +461,8 @@ function combatAct(G, actor, dt) {
   while (dy > Math.PI) dy -= Math.PI * 2;
   while (dy < -Math.PI) dy += Math.PI * 2;
   if (Math.abs(dy) > 0.06) return;
-  // Trigger discipline: never fire through a teammate. If a friendly body is
-  // within half a metre of the line to the target and nearer than it, hold.
-  // (_toTarget already holds the normalized aim direction from the aim step.)
+  // Trigger discipline: never fire through a teammate — a friendly body
+  // within half a metre of the line to the target holds fire.
   eyePos(actor, _eye);
   const targetDist = Math.hypot(bot.enemy.pos.x - actor.pos.x, bot.enemy.pos.z - actor.pos.z);
   for (const mate of G.actors) {

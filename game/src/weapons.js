@@ -1,46 +1,29 @@
 // The armoury: five firearms and two grenades, the firing model, and the
 // viewmodel the player sees. Accuracy is the heart of it: spread grows with
-// movement, with sustained fire (bloom) and in the air, and shrinks when a
-// shooter stops or crouches — so the game's gunplay rewards the pause-and-tap
-// rhythm of a tactical shooter, not the spray. Each weapon also carries an
-// armour-penetration value (pen): the Pike ignores a vest entirely, the
-// Longarm defeats most of one, the pistols and SMG are blunted by it — see
-// hurtActor in actor.js. Every shot and blast is emitted on the hearing bus.
+// movement, sustained fire (bloom) and air time, and shrinks when a shooter
+// stops or crouches — gunplay rewards pause-and-tap, not the spray. Each
+// weapon also carries a penetration value (pen): the Pike ignores a vest
+// entirely, the Longarm defeats most of one — see hurtActor in actor.js.
 import * as THREE from 'three';
 import { raycastWorld } from './map.js';
 import { eyePos, lookDir, rayHitActor, hurtActor } from './actor.js';
 
 export const WEAPONS = {
-  sidearm: {
-    id: 'sidearm', name: 'P9 Sidearm', slot: 'sidearm', price: 0,
+  sidearm: { id: 'sidearm', name: 'P9 Sidearm', slot: 'sidearm', price: 0,
     damage: 26, rpm: 360, auto: false, mag: 12, reserve: 48, reload: 1.35,
-    spread: 0.55, moveSpread: 1.5, bloomPerShot: 0.35, recoil: 0.011,
-    range: 42, pen: 0.5, kind: 'pistol', zoom: 1,
-  },
-  rook: {
-    id: 'rook', name: 'Rook .45', slot: 'sidearm', price: 450,
+    spread: 0.55, moveSpread: 1.5, bloomPerShot: 0.35, recoil: 0.011, range: 42, pen: 0.5, kind: 'pistol', zoom: 1 },
+  rook: { id: 'rook', name: 'Rook .45', slot: 'sidearm', price: 450,
     damage: 34, rpm: 330, auto: false, mag: 15, reserve: 60, reload: 1.5,
-    spread: 0.45, moveSpread: 1.4, bloomPerShot: 0.32, recoil: 0.015,
-    range: 46, pen: 0.6, kind: 'pistol', zoom: 1,
-  },
-  dart: {
-    id: 'dart', name: 'Dart-9 SMG', slot: 'primary', price: 1250,
+    spread: 0.45, moveSpread: 1.4, bloomPerShot: 0.32, recoil: 0.015, range: 46, pen: 0.6, kind: 'pistol', zoom: 1 },
+  dart: { id: 'dart', name: 'Dart-9 SMG', slot: 'primary', price: 1250,
     damage: 22, rpm: 820, auto: true, mag: 32, reserve: 128, reload: 2.0,
-    spread: 0.85, moveSpread: 1.1, bloomPerShot: 0.16, recoil: 0.007,
-    range: 38, pen: 0.55, kind: 'smg', zoom: 1,
-  },
-  longarm: {
-    id: 'longarm', name: 'Longarm AR', slot: 'primary', price: 2700,
+    spread: 0.85, moveSpread: 1.1, bloomPerShot: 0.16, recoil: 0.007, range: 38, pen: 0.55, kind: 'smg', zoom: 1 },
+  longarm: { id: 'longarm', name: 'Longarm AR', slot: 'primary', price: 2700,
     damage: 36, rpm: 600, auto: true, mag: 30, reserve: 120, reload: 2.3,
-    spread: 0.5, moveSpread: 1.9, bloomPerShot: 0.22, recoil: 0.012,
-    range: 70, pen: 0.75, kind: 'rifle', zoom: 1,
-  },
-  pike: {
-    id: 'pike', name: 'Pike Longshot', slot: 'primary', price: 4300,
+    spread: 0.5, moveSpread: 1.9, bloomPerShot: 0.22, recoil: 0.012, range: 70, pen: 0.75, kind: 'rifle', zoom: 1 },
+  pike: { id: 'pike', name: 'Pike Longshot', slot: 'primary', price: 4300,
     damage: 96, rpm: 48, auto: false, mag: 5, reserve: 25, reload: 2.9,
-    spread: 0.06, moveSpread: 6.0, bloomPerShot: 1.4, recoil: 0.055,
-    range: 120, pen: 1.0, kind: 'sniper', zoom: 3.2,
-  },
+    spread: 0.06, moveSpread: 6.0, bloomPerShot: 1.4, recoil: 0.055, range: 120, pen: 1.0, kind: 'sniper', zoom: 3.2 },
 };
 
 export const GRENADES = {
@@ -84,10 +67,20 @@ const _hitPoint = new THREE.Vector3();
 const _muzzle = new THREE.Vector3();
 const _hit = { t: 0, part: '', mult: 1 };
 
-// Fire one hitscan round for `shooter` with their active weapon. Handles
-// ammo, spread, the wall/actor race, damage with head multiplier and range
-// falloff, tracers, impact effects, hearing noise and recoil. Returns true
-// when a round actually left the barrel.
+// The bearing damage came from, for the HUD's directional wedge: the angle
+// of (from - victim) against the victim's facing — 0 dead ahead, positive
+// to the right, ±PI behind. With forward (-sin yaw, -cos yaw) and right
+// (cos yaw, -sin yaw), the bearing is atan2 of the right/forward parts.
+export function damageBearing(victim, fromX, fromZ) {
+  const dx = fromX - victim.pos.x, dz = fromZ - victim.pos.z;
+  const fx = -Math.sin(victim.yaw), fz = -Math.cos(victim.yaw);
+  const rx = Math.cos(victim.yaw), rz = -Math.sin(victim.yaw);
+  return Math.atan2(dx * rx + dz * rz, dx * fx + dz * fz);
+}
+
+// Fire one hitscan round for `shooter`: ammo, spread, the wall/actor race,
+// damage with head multiplier and range falloff, tracers, impact effects,
+// hearing noise and recoil. True when a round left the barrel.
 export function fireHitscan(G, shooter) {
   const inst = activeInstance(shooter);
   if (!inst || shooter.reloading > 0) return false;
@@ -136,7 +129,11 @@ export function fireHitscan(G, shooter) {
       G.audio.hit(hitPart === 'head');
       G.hud.hitmarker(hitPart === 'head', died);
     }
-    if (victim.isPlayer) { G.audio.hurt(); G.hud.damageFlash(); }
+    if (victim.isPlayer) {
+      G.audio.hurt();
+      G.hud.damageFlash();
+      G.hud.damageFrom(damageBearing(victim, shooter.pos.x, shooter.pos.z));
+    }
     if (died) G.onKill(shooter, victim, hitPart === 'head', def);
   } else {
     if (tWorld !== Infinity) G.effects.impact(_hitPoint, false);
@@ -295,16 +292,20 @@ function detonate(G, g) {
     if (dmg < 4) continue;
     if (actor.bot) actor.bot.lastHurtBy = g.thrower;
     const died = hurtActor(actor, dmg, 0.35); // frag shrapnel defeats little armour
-    if (actor.isPlayer) { G.audio.hurt(); G.hud.damageFlash(); }
+    if (actor.isPlayer) {
+      G.audio.hurt();
+      G.hud.damageFlash();
+      G.hud.damageFrom(damageBearing(actor, g.pos.x, g.pos.z));
+    }
     if (died) G.onKill(g.thrower, actor, false, null);
   }
 }
 
 // --- Viewmodel ---------------------------------------------------------------
 
-// The gun in the player's hands: a low-poly build per weapon kind, hung off
-// the camera. It kicks back and climbs when firing, dips and tilts through a
-// reload, and bobs gently with movement. One shared group, rebuilt on switch.
+// The gun in the player's hands: a low-poly build per weapon kind, hung
+// off the camera. It kicks when firing, dips through a reload, bobs with
+// movement. One shared group, rebuilt on switch.
 export function createViewmodel(camera) {
   const group = new THREE.Group();
   group.position.set(0.25, -0.24, -0.5);
@@ -328,27 +329,22 @@ export function createViewmodel(camera) {
     return m;
   }
 
+  // Part rows per kind: [w, h, d, grip?, x, y, z] boxes, dark metal unless
+  // the grip flag picks the wooden grip material.
+  const PARTS = {
+    pistol: [[0.055, 0.11, 0.24, 0, 0, 0, -0.05], [0.05, 0.14, 0.06, 1, 0, -0.1, 0.05]],
+    smg: [[0.06, 0.13, 0.42, 0, 0, 0, -0.12], [0.045, 0.2, 0.05, 0, 0, -0.15, -0.05], [0.05, 0.13, 0.06, 1, 0, -0.09, 0.1]],
+    rifle: [[0.065, 0.14, 0.62, 0, 0, 0, -0.2], [0.05, 0.22, 0.055, 0, 0, -0.16, -0.12], [0.055, 0.12, 0.07, 1, 0, -0.09, 0.12], [0.04, 0.05, 0.16, 0, 0, 0.1, -0.3]],
+    sniper: [[0.06, 0.13, 0.85, 0, 0, 0, -0.3], [0.05, 0.2, 0.05, 0, 0, -0.15, -0.2], [0.055, 0.12, 0.07, 1, 0, -0.09, 0.12]],
+  };
   function build(defId) {
     clear();
     kind = WEAPONS[defId].kind;
-    if (kind === 'pistol') {
-      add(new THREE.BoxGeometry(0.055, 0.11, 0.24), dark, 0, 0, -0.05);
-      add(new THREE.BoxGeometry(0.05, 0.14, 0.06), grip, 0, -0.1, 0.05);
-    } else if (kind === 'smg') {
-      add(new THREE.BoxGeometry(0.06, 0.13, 0.42), dark, 0, 0, -0.12);
-      add(new THREE.BoxGeometry(0.045, 0.2, 0.05), dark, 0, -0.15, -0.05);
-      add(new THREE.BoxGeometry(0.05, 0.13, 0.06), grip, 0, -0.09, 0.1);
-    } else if (kind === 'rifle') {
-      add(new THREE.BoxGeometry(0.065, 0.14, 0.62), dark, 0, 0, -0.2);
-      add(new THREE.BoxGeometry(0.05, 0.22, 0.055), dark, 0, -0.16, -0.12);
-      add(new THREE.BoxGeometry(0.055, 0.12, 0.07), grip, 0, -0.09, 0.12);
-      add(new THREE.BoxGeometry(0.04, 0.05, 0.16), dark, 0, 0.1, -0.3);
-    } else { // sniper
-      add(new THREE.BoxGeometry(0.06, 0.13, 0.85), dark, 0, 0, -0.3);
-      add(new THREE.BoxGeometry(0.05, 0.2, 0.05), dark, 0, -0.15, -0.2);
-      add(new THREE.BoxGeometry(0.055, 0.12, 0.07), grip, 0, -0.09, 0.12);
-      const scope = add(new THREE.CylinderGeometry(0.035, 0.035, 0.2, 8), dark, 0, 0.11, -0.25, Math.PI / 2);
-      scope.rotation.x = Math.PI / 2;
+    for (const [w, h, d, g, x, y, z] of PARTS[kind]) {
+      add(new THREE.BoxGeometry(w, h, d), g ? grip : dark, x, y, z);
+    }
+    if (kind === 'sniper') { // the scope tube rides on top
+      add(new THREE.CylinderGeometry(0.035, 0.035, 0.2, 8), dark, 0, 0.11, -0.25, Math.PI / 2);
     }
   }
 
@@ -364,9 +360,6 @@ export function createViewmodel(camera) {
       group.position.y = -0.24 + bob - kick * 0.02;
       group.rotation.x = kick * 0.05 + (reloading > 0 ? -0.7 * Math.sin(Math.min(1, reloading) * Math.PI) * 0.4 : 0);
       group.visible = !scoped;
-    },
-    muzzleWorld(out, camera) {
-      return out.setFromMatrixPosition(group.matrixWorld).add(new THREE.Vector3(0, 0.02, -0.6).applyQuaternion(camera.quaternion));
     },
   };
 }

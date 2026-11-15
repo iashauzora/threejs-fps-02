@@ -2,8 +2,7 @@
 // collider footprints, both sites lettered, the player's team as ember
 // dots, enemies only while a teammate's spotting is fresh (brains publish
 // sightings to G.spotted; the player's own line of sight counts too), and
-// the charge once planted. Redrawn at ~10 Hz from state; the 3D world is
-// never touched. North is up, matching the map data (x east, z south).
+// the charge once planted. Redrawn at ~10 Hz.
 import * as THREE from 'three';
 import { COLLIDERS, SITES, losClear } from './map.js';
 import { eyePos } from './actor.js';
@@ -42,14 +41,15 @@ export function createMinimap(G) {
     for (const c of COLLIDERS) {
       ctx.fillRect(px(c.minX), pz(c.minZ), (c.maxX - c.minX) * SX, (c.maxZ - c.minZ) * SZ);
     }
-    // The planted charge: a pulsing red square.
+    // The planted charge: a pulsing red square (wall-clock blink — the map
+    // is a live read, not sim state).
     if (G.charge && G.charge.state === 'planted') {
       const blink = Math.floor(now / 400) % 2 === 0;
       ctx.fillStyle = blink ? '#ff2a1a' : '#ffb0a0';
       ctx.fillRect(px(G.charge.x) - 3, pz(G.charge.z) - 3, 6, 6);
     }
-    // Enemies, but only while spotted: a fresh brain sighting, or the
-    // player's own eyes right now.
+    // Enemies only while spotted: a fresh brain sighting, or the player's
+    // own eyes right now.
     const player = G.player;
     eyePos(player, _eye);
     for (const a of G.actors) {

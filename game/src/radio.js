@@ -1,10 +1,9 @@
-// Team radio: bots talk. Game events become short callouts — the plan call
-// at round start, first contact, the plant, a defuse in progress, a bot
-// badly hurt, the round result — each shown as a fading line in the HUD's
-// radio log (speaker name in team colour) with a soft squelch blip, and
-// kept in a match log the minimap and any reader can inspect. Callouts are
+// Team radio: bots talk. Game events become short callouts — the plan call,
+// first contact, the plant, a defuse in progress, a bot badly hurt, the
+// round result — each a fading line in the HUD's radio log (speaker in team
+// colour) with a soft squelch blip, and kept in a match log. Callouts are
 // information, not decoration: a contact call names the zone the bot saw
-// the enemy in, and teammates' brains hear the same zones through the bus.
+// the enemy in, and teammates hear the same zones.
 import { SITES, siteAt } from './map.js';
 
 // Coarse zone name for a position: a site, mid, or a lane.
@@ -25,8 +24,8 @@ export function createRadio(G) {
   const log = []; // {name, team, text, at} — the match's radio record
   return {
     log,
-    // One callout from one actor. Per-actor cooldown lives on the brain
-    // (bot.radioAt) for event callouts; scripted calls pass force=true.
+    // One callout from one actor. The per-actor cooldown lives on the brain
+    // (bot.radioAt); scripted calls pass force=true.
     say(actor, text, force = false) {
       if (!actor) return;
       if (!force && actor.bot && G.time < actor.bot.radioAt) return;
@@ -36,8 +35,8 @@ export function createRadio(G) {
       G.hud.radio(actor.name, actor.team, text);
       G.audio.radioBlip();
     },
-    // A callout from a whole team (round results): spoken by its first
-    // living bot, or its first bot if all are down.
+    // A callout from a whole team: spoken by its first living bot, or its
+    // first bot if all are down.
     teamSay(team, text) {
       const mates = G.actors.filter((a) => a.team === team && a.bot);
       const speaker = mates.find((a) => a.alive) || mates[0];

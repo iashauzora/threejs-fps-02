@@ -1,22 +1,19 @@
-// Foundry District: an original compact yard map, described as data.
-// Two charge sites (A "Smelter" north-east, B "Depot" south-east), a mid band,
-// north and south lanes, and vertical connectors between them, so every round
-// offers at least three routes to either site. Everything solid is an
-// axis-aligned box; the same list drives rendering, collision, line-of-sight
-// and bot pathing, so what you see is exactly what blocks bullets and bodies.
-//
-// Coordinates: x runs west(-) to east(+), z north(-) to south(+), y up.
-// The yard floor is the square [-32,32] x [-24,24].
+// Foundry District: an original compact yard map, described as data. Two
+// charge sites (A "Smelter" north-east, B "Depot" south-east), a mid band,
+// north and south lanes, and vertical connectors: at least three routes to
+// either site. Everything solid is an axis-aligned box; the same list
+// drives rendering, collision, line-of-sight and bot pathing, so what you
+// see is what blocks bullets and bodies. Coordinates: x west(-) to east(+),
+// z north(-) to south(+), y up; the yard floor is [-32,32] x [-24,24].
 
 export const MAP_NAME = 'Foundry District';
 export const TEAM_EMBER = 'ember';   // attackers: plant the charge
 export const TEAM_WARDEN = 'warden'; // defenders: stop them
 
 // kind: 'wall' (full height steel), 'block' (building), 'crate' (timber),
-// 'stack' (double crate), 'machine' (smelter iron), 'container' (depot steel),
-// 'barrel' (fuel drum cluster), 'pipe' (low pipe run).
-// h is the box height; boxes under 1.35 high are cover you can see over when
-// standing, everything taller blocks sight completely.
+// 'stack' (double crate), 'machine' (smelter iron), 'container' (depot
+// steel), 'barrel' (fuel drums), 'pipe' (low pipe run). h is the box
+// height; under 1.35 is cover you can see over, taller blocks sight.
 function box(minX, maxX, minZ, maxZ, h, kind) {
   return { minX, maxX, minZ, maxZ, h, kind };
 }
@@ -71,11 +68,9 @@ export const COLLIDERS = [
   box(-27, -25.8, 6.8, 8, 1.1, 'crate'),
   box(26.4, 27.6, -8.6, -7.4, 1.1, 'crate'),
   box(26.4, 27.6, 7.4, 8.6, 1.1, 'crate'),
-  // Dressing that is also cover (v2): barrel clusters at the lane mouths and
-  // along the mid diagonals, low pipe runs under the separator buildings'
-  // door lines, and extra stacks breaking up the long lane sightlines. Every
-  // box here keeps the waypoint lanes (checked in the build's graph test)
-  // and sits off the straight spawn-to-site walks.
+  // Dressing that is also cover (v2): barrel clusters at the lane mouths,
+  // low pipe runs under the door lines, extra stacks breaking the long lane
+  // sightlines. Every box keeps the waypoint lanes clear (graph-checked).
   box(-16.6, -15.8, -3.2, -2.4, 1.0, 'barrel'),
   box(-16.6, -15.8, 2.4, 3.2, 1.0, 'barrel'),
   box(3.2, 4.0, -4.6, -3.8, 1.0, 'barrel'),
@@ -108,8 +103,8 @@ export function siteAt(x, z) {
   return null;
 }
 
-// Yaw convention (actor.js): forward is (-sin yaw, -cos yaw), so Ember at the
-// west edge faces east with yaw -PI/2 and the Wardens face west with +PI/2.
+// Yaw convention (actor.js): forward is (-sin yaw, -cos yaw), so Ember at
+// the west edge faces east with yaw -PI/2, the Wardens west with +PI/2.
 export const SPAWNS = {
   ember: [
     { x: -29, z: -4, yaw: -Math.PI / 2 }, { x: -29, z: -2, yaw: -Math.PI / 2 },
@@ -131,8 +126,7 @@ export const HOLD_POINTS = {
 };
 
 // Waypoint graph nodes: lane corners, door mouths, site entries. Edges are
-// derived below from straight-line clearance, so the graph can never promise
-// a route through a wall.
+// derived from straight-line clearance, so no route runs through a wall.
 export const WAYPOINTS = [
   [-28, 0], [-25, -8], [-25, 8], [-26, -16], [-26, 16],
   [-18, -18], [-18, 18], [-10, -17], [-10, 17], [-10, -9], [-10, 9],
@@ -189,38 +183,11 @@ export function nearestWaypoint(x, z) {
   return best;
 }
 
-// Breadth-first next hop: returns the waypoint to walk to in order to reach
-// (tx,tz) from (fx,fz), or null when a straight walk already works.
-export function nextHop(fx, fz, tx, tz, scratch) {
-  if (walkClear(fx, fz, tx, tz)) return null;
-  const from = nearestWaypoint(fx, fz);
-  const to = nearestWaypoint(tx, tz);
-  if (from === to) return to;
-  const prev = scratch.prev;
-  const seen = scratch.seen;
-  prev.fill(-2); seen.fill(false);
-  const queue = scratch.queue;
-  let qh = 0, qt = 0;
-  queue[qt++] = from.id; seen[from.id] = true; prev[from.id] = -1;
-  while (qh < qt) {
-    const cur = WAYPOINTS[queue[qh++]];
-    if (cur === to) break;
-    for (const nid of cur.next) {
-      if (!seen[nid]) { seen[nid] = true; prev[nid] = cur.id; queue[qt++] = nid; }
-    }
-  }
-  if (!seen[to.id]) return from;
-  let node = to.id;
-  while (prev[node] !== -1 && prev[node] !== from.id) node = prev[node];
-  return WAYPOINTS[node];
-}
-
 // Full route from (fx,fz) to (tx,tz): the waypoints to walk through, in
 // order. Empty when a straight walk already works or no route exists —
-// callers then steer straight at the goal. Bots cache this route and follow
-// it node by node: recomputing a fresh "next hop" every step from a moving
-// position flips direction wherever the nearest node changes, which can pin
-// a bot against nothing at all, oscillating across the boundary forever.
+// callers then steer straight at the goal. Bots cache the route and follow
+// it node by node: recomputing a fresh "next hop" every step can pin a bot
+// oscillating across the nearest-node boundary forever.
 export function findPath(fx, fz, tx, tz, scratch) {
   if (walkClear(fx, fz, tx, tz)) return NO_PATH;
   const from = nearestWaypoint(fx, fz);
@@ -256,7 +223,7 @@ export function makePathScratch() {
 }
 
 // 3D line of sight between two eye points: blocked only by tall boxes.
-// a and b are {x,y,z}-like. Low cover never blocks a standing eye line.
+// Low cover never blocks a standing eye line.
 export function losClear(ax, ay, az, bx, by, bz) {
   for (const c of BLOCKERS) {
     if (segmentHitsBox3(ax, ay, az, bx, by, bz, c)) return false;
@@ -291,9 +258,9 @@ function segmentHitsBox3(ax, ay, az, bx, by, bz, b) {
   return true;
 }
 
-// Ray vs the solid world: nearest hit distance along a unit ray, or Infinity.
-// Writes the hit point into `out` when one is given. Used by hitscan fire and
-// by grenade bounces; the ground plane y=0 is included.
+// Ray vs the solid world: nearest hit distance along a unit ray, or
+// Infinity. Writes the hit point into `out` when given. Used by hitscan
+// fire and grenade bounces; the ground plane is included.
 export function raycastWorld(ox, oy, oz, dx, dy, dz, out) {
   let best = Infinity;
   if (dy < -1e-9) {
@@ -332,8 +299,8 @@ export function rayBox(ox, oy, oz, dx, dy, dz, minX, minY, minZ, maxX, maxY, max
   return t0;
 }
 
-// Circle-vs-boxes collision resolve on the ground plane. Mutates pos {x,z}
-// so a body of `radius` never overlaps a collider whose top is above its feet.
+// Circle-vs-boxes collision resolve on the ground plane: mutates pos {x,z}
+// so a body of `radius` never overlaps a collider above its feet.
 export function collideXZ(pos, radius, feetY) {
   for (const c of COLLIDERS) {
     if (feetY + 0.3 >= c.h) continue; // feet are above this box: no block

@@ -1,6 +1,6 @@
 // Keyboard and mouse state for the local player: a held-keys set, mouse-look
-// deltas accumulated between simulation steps, and pointer lock on the canvas.
-// The simulation reads and clears the deltas once per fixed step, so look speed
+// deltas accumulated between steps, pointer lock on the canvas. The
+// simulation reads and clears the deltas once per fixed step, so look speed
 // never depends on the display's refresh rate.
 export function createInput(canvas, onLockChange) {
   const keys = new Set();
@@ -41,7 +41,6 @@ export function createInput(canvas, onLockChange) {
     get locked() { return locked; },
     get firing() { return firing; },
     down(code) { return keys.has(code); },
-    wasPressed(code) { return pressed.has(code); },
     requestLock() {
       // Newer Chrome returns a promise; a refusal (no real gesture, an
       // embedded frame) must never surface as an unhandled rejection.
@@ -50,7 +49,6 @@ export function createInput(canvas, onLockChange) {
         if (p && typeof p.catch === 'function') p.catch(() => {});
       } catch { /* the overlay stays up; the next click retries */ }
     },
-    unlock() { if (locked) document.exitPointerLock(); },
     // Called once per fixed step by the player controller.
     consumeStep() {
       const step = { dx: lookDX, dy: lookDY };
@@ -61,6 +59,5 @@ export function createInput(canvas, onLockChange) {
     // Buy-menu and shot modes read single presses without the step clearing
     // them first; main polls this before stepping the player.
     peekPressed() { return pressed; },
-    clearPressed() { pressed.clear(); },
   };
 }

@@ -1,8 +1,7 @@
-// One actor model for the player and every bot: a capsule-ish body on the
-// ground plane with acceleration/friction movement, crouch, jumping, health,
-// armour and three hitbox bands (legs, torso, head). Sharing the model means
-// the player's movement and a bot's movement obey exactly the same rules, and
-// a bullet checks the same boxes no matter who it hits.
+// One actor model for the player and every bot: a capsule-ish body with
+// acceleration/friction movement, crouch, jumping, health, armour and three
+// hitbox bands (legs, torso, head). Sharing the model means player and bot
+// movement obey the same rules, and a bullet checks the same boxes.
 import * as THREE from 'three';
 import { collideXZ, rayBox } from './map.js';
 
@@ -72,9 +71,9 @@ export function lookDir(actor, out) {
 }
 
 // wish: {x, z} desired world-space move direction (any length), plus flags.
-// Acceleration is a fast exponential approach on the ground and weak in the
-// air, so strafing has weight, stopping is quick, and a full sprint is the
-// least accurate way to move (weapons read speedNow for spread).
+// Acceleration is a fast exponential approach on the ground, weak in the
+// air: strafing has weight, stopping is quick, and a sprint is the least
+// accurate way to move (weapons read speedNow).
 export function stepActor(actor, dt, wish) {
   const maxSpeed = actor.crouch ? SPEED_CROUCH : (wish.walk ? SPEED_WALK : SPEED_RUN);
   const wl = Math.hypot(wish.x, wish.z);
@@ -133,11 +132,10 @@ export function rayHitActor(ox, oy, oz, dx, dy, dz, actor, hit) {
 }
 
 // Apply damage through armour. A weapon's penetration `pen` (0..1) is the
-// share of damage armour cannot stop: armour negates up to (1 - pen) of the
-// hit, wearing down by what it negates, and the rest reaches health. A
-// rifle (pen 0.75) therefore chews through a vest a pistol (pen 0.5, the
-// default) barely dents. Returns true when the actor dies. Kill
-// bookkeeping, feed and sound belong to the caller.
+// share armour cannot stop: armour negates up to (1 - pen) of the hit,
+// wearing down by what it negates; the rest reaches health. A rifle (pen
+// 0.75) chews through a vest a pistol (pen 0.5) barely dents. Returns true
+// when the actor dies; kill bookkeeping is the caller's.
 export function hurtActor(actor, rawDamage, pen = 0.5) {
   let dmg = rawDamage;
   if (actor.armorHp > 0) {

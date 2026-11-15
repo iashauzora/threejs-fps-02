@@ -1,7 +1,6 @@
-// Transient visuals, all pooled: tracers, muzzle flashes, impact sparks, hit
-// puffs, a flash pop and the charge's explosion. Nothing here allocates in
-// the hot loop — a fixed set of meshes and one shared Points cloud cycle
-// through the effects, and a spent effect simply hides until it is reused.
+// Transient visuals, all pooled: tracers, muzzle flashes, impact sparks,
+// hit puffs, a flash pop and the charge's explosion. Nothing allocates in
+// the hot loop — fixed meshes and one shared Points cloud cycle through.
 import * as THREE from 'three';
 import { PALETTE } from './palette.js';
 
@@ -24,8 +23,8 @@ export function createEffects(scene) {
   }
   let tracerIdx = 0;
 
-  // Muzzle flash: one shared additive plane with a radial star texture (a
-  // canvas gradient: hot core, spiked falloff) + one shared point light.
+  // Muzzle flash: one shared additive plane with a radial star texture
+  // (canvas gradient: hot core, spiked falloff) + one shared point light.
   const flashCanvas = document.createElement('canvas');
   flashCanvas.width = flashCanvas.height = 128;
   const fx = flashCanvas.getContext('2d');

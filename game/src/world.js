@@ -1,7 +1,15 @@
 // Builds the Foundry District's three.js scene from the map data: ground,
 // colliders as styled boxes, the smelter line, depot containers, site paint,
-// lamps and a dusk sky. Pure presentation: every solid mesh stands exactly on
-// its collider from map.js, so the picture and the physics never disagree.
+// lamps and a dusk sky. Pure presentation: every solid mesh stands on its
+// collider from map.js, so picture and physics never disagree.
+// The yard is alive, but on the simulation's clock, not the wall's: the
+// returned update(t) takes G.time (the fixed-step sim time main.js keeps)
+// and poses everything as a pure function of it — the crane's jib sweeping
+// its slow circle, aviation lights blinking on the skyline stacks, lamp
+// heads breathing, the furnace light flickering, smoke rising off the
+// smelter stacks. A paused game is a frozen yard, a screenshot setup can
+// pose the yard mid-breath at a chosen t, and two runs of the same match
+// animate identically. Nothing animated is a collider.
 import * as THREE from 'three';
 import { PALETTE } from './palette.js';
 import { COLLIDERS, SITES } from './map.js';
@@ -21,6 +29,11 @@ export function createWorld(scene) {
   scene.background = new THREE.Color(PALETTE.sky);
   scene.fog = new THREE.Fog(PALETTE.fog, 30, 95);
 
+  // Animated emissives, registered as the world is built and posed together
+  // by update(t) at the bottom: {mat, kind, phase} — 'aviation' hard-blinks,
+  // 'lamp' and 'rim' pulse on sine curves of different periods.
+  const blinkers = [];
+
   const hemi = new THREE.HemisphereLight(0xbdd0e4, 0x4a4038, 1.0);
   scene.add(hemi);
   const sun = new THREE.DirectionalLight(0xffd9b0, 1.8);
@@ -33,7 +46,7 @@ export function createWorld(scene) {
   sun.shadow.bias = -0.0006;
   scene.add(sun);
 
-  // Ground: one slab, plus a darker stained apron under the smelter.
+  // Ground: one slab, plus a darker apron under the smelter.
   const ground = new THREE.Mesh(
     new THREE.PlaneGeometry(64, 48),
     new THREE.MeshStandardMaterial({ color: PALETTE.ground, roughness: 1 }),
@@ -50,7 +63,7 @@ export function createWorld(scene) {
   apron.receiveShadow = true;
   scene.add(apron);
 
-  // Yard markings: lane centre lines and the mid stripe, painted thin planes.
+  // Yard markings: lane centre lines and the mid stripe, thin planes.
   const paintMat = new THREE.MeshBasicMaterial({ color: 0xd8d2c4, transparent: true, opacity: 0.28 });
   for (const [w, d, x, z] of [[56, 0.18, 0, -18.4], [56, 0.18, 0, 18.4], [56, 0.18, 0, 0]]) {
     const line = new THREE.Mesh(new THREE.PlaneGeometry(w, d), paintMat);
@@ -59,8 +72,8 @@ export function createWorld(scene) {
     scene.add(line);
   }
 
-  // Every collider becomes one box mesh in its kind's material. Container
-  // boxes alternate teal and rust so the depot reads as stacked freight.
+  // Every collider becomes one box mesh in its kind's material. Containers
+  // alternate teal and rust so the depot reads as stacked freight.
   const geoCache = new Map();
   const matCache = new Map();
   let containerFlip = false;
@@ -110,7 +123,7 @@ export function createWorld(scene) {
       tube.castShadow = true;
       scene.add(tube);
     }
-    // A lighter cap strip on crates and containers sells the low-poly look.
+    // A dark cap strip on crates and containers sells the low-poly look.
     if (c.kind === 'crate' || c.kind === 'stack' || c.kind === 'container') {
       const cap = new THREE.Mesh(
         new THREE.BoxGeometry(w * 0.96, 0.07, d * 0.96),
@@ -125,6 +138,7 @@ export function createWorld(scene) {
   // mouth that glows on site A. Pure decoration above the machine colliders.
   const stackMat = new THREE.MeshStandardMaterial({ color: 0x6e5a4e, roughness: 0.55, metalness: 0.6 });
   const rimMat = new THREE.MeshStandardMaterial({ color: 0x1c1c1c, emissive: PALETTE.furnace, emissiveIntensity: 1.6 });
+  blinkers.push({ mat: rimMat, kind: 'rim', phase: 0 });
   for (const x of [20, 23.6, 27.2]) {
     const stack = new THREE.Mesh(new THREE.CylinderGeometry(0.85, 1.05, 4.6, 10), stackMat);
     stack.position.set(x, 5.2 + 2.3, -19.2);
@@ -170,6 +184,7 @@ export function createWorld(scene) {
   // Yard lamps: poles with warm heads, two real point lights kept cheap.
   const poleMat = new THREE.MeshStandardMaterial({ color: 0x33383e, roughness: 0.6, metalness: 0.5 });
   const headMat = new THREE.MeshStandardMaterial({ color: 0x222222, emissive: PALETTE.lamp, emissiveIntensity: 2.2 });
+  blinkers.push({ mat: headMat, kind: 'lamp', phase: 0 });
   const lampSpots = [[-16, -16], [8, -18], [-16, 16], [8, 18], [-4.6, -4.4], [14.5, -4.4], [14.5, 4.4]];
   lampSpots.forEach(([x, z], i) => {
     const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.09, 0.12, 5.4, 6), poleMat);
@@ -185,15 +200,15 @@ export function createWorld(scene) {
       scene.add(light);
     }
   });
-  // One accent light over the depot so site B reads teal against A's ember.
+  // One accent light over the depot: site B reads teal against A's ember.
   const depotLight = new THREE.PointLight(PALETTE.wardenSoft, 14, 14, 1.9);
   depotLight.position.set(24, 3.2, 14);
   scene.add(depotLight);
 
-  // --- v2 dressing: panels, signage, decals, skyline -----------------------
+  // --- v2 dressing: panels, signage, decals, skyline ---
   // Building panels: a coloured stripe and a lighter cap on every separator
   // building, alternating palette tints, so the long walls stop reading as
-  // one flat grey. Pure decoration pinned to the collider faces.
+  // one flat grey. Decoration pinned to the collider faces.
   const stripeTints = [0x7a8894, 0x8a6f4d, 0x5f7a72, 0x946b54];
   let stripeIdx = 0;
   for (const c of COLLIDERS) {
@@ -211,8 +226,7 @@ export function createWorld(scene) {
   }
 
   // Site signage: a letter board on posts at each site's west entrance,
-  // painted on a canvas (letter + name in the site's colour). Boards face
-  // the attacking approach, so they read in play and in screenshots.
+  // painted on a canvas (letter + name in the site's colour).
   function signTexture(letter, name, colorCss) {
     const cv = document.createElement('canvas');
     cv.width = 256; cv.height = 256;
@@ -259,15 +273,19 @@ export function createWorld(scene) {
   }
 
   // Skyline silhouettes beyond the walls: dead stacks, a gantry crane and
-  // storage tanks in fog-dark steel. Outside the play space, visual only —
-  // they give the dusk something to end on in every screenshot.
+  // storage tanks in fog-dark steel — visual only.
   const skyMat = new THREE.MeshStandardMaterial({ color: 0x39424d, roughness: 0.9 });
   const skyGlow = new THREE.MeshStandardMaterial({ color: 0x1c1c1c, emissive: PALETTE.furnace, emissiveIntensity: 1.1 });
+  let skyIdx = 0;
   for (const [x, z, h, r] of [[-42, -12, 17, 1.6], [-39, 10, 13, 1.3], [43, -18, 19, 1.8], [41, 16, 14, 1.4], [-8, -40, 16, 1.5], [18, 39, 15, 1.5]]) {
     const stack = new THREE.Mesh(new THREE.CylinderGeometry(r, r * 1.25, h, 10), skyMat);
     stack.position.set(x, h / 2, z);
     scene.add(stack);
-    const rim = new THREE.Mesh(new THREE.CylinderGeometry(r * 1.02, r * 1.02, 0.4, 10), skyGlow);
+    // Each skyline rim gets its own material clone so the aviation blink
+    // can run out of phase from stack to stack (update poses them).
+    const rimMatSky = skyGlow.clone();
+    blinkers.push({ mat: rimMatSky, kind: 'aviation', phase: (skyIdx++) * 0.37 });
+    const rim = new THREE.Mesh(new THREE.CylinderGeometry(r * 1.02, r * 1.02, 0.4, 10), rimMatSky);
     rim.position.set(x, h + 0.2, z);
     scene.add(rim);
   }
@@ -291,14 +309,87 @@ export function createWorld(scene) {
     new THREE.MeshStandardMaterial({ color: 0x2c333c, emissive: PALETTE.lamp, emissiveIntensity: 0.7 }));
   cab.position.set(4, 9.6, -27.5);
   scene.add(cab);
+  // The crane works: a turntable jib on the gantry beam — arm, counterweight,
+  // cable and hook on one pivot group that update(t) rotates from sim time
+  // (a full sweep takes ~57 s). It never enters the play space.
+  const jib = new THREE.Group();
+  jib.position.set(2, 11.05, -27.5);
+  const jibArm = new THREE.Mesh(new THREE.BoxGeometry(7.6, 0.32, 0.42), gantryMat);
+  jibArm.position.x = 1.7;
+  jib.add(jibArm);
+  const jibCounter = new THREE.Mesh(new THREE.BoxGeometry(1.1, 0.8, 0.7), gantryMat);
+  jibCounter.position.set(-2.9, -0.15, 0);
+  jib.add(jibCounter);
+  const jibPost = new THREE.Mesh(new THREE.BoxGeometry(0.34, 0.85, 0.34), gantryMat);
+  jibPost.position.y = 0.42;
+  jib.add(jibPost);
+  const cable = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.03, 3.4, 5), gantryMat);
+  cable.position.set(4.9, -1.85, 0);
+  jib.add(cable);
+  const hook = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.5, 0.42),
+    new THREE.MeshStandardMaterial({ color: 0x74513a, roughness: 0.55, metalness: 0.5 }));
+  hook.position.set(4.9, -3.75, 0);
+  jib.add(hook);
+  scene.add(jib);
 
-  return { sun, furnaceLight };
+  // Smoke over the smelter stacks: one Points cloud, 120 particles, each a
+  // pure function of sim time — rise = (t*speed + phase) mod 1: born at its
+  // stack's rim (y 9.9), climbing ~6.8 m while the wind pushes it east and
+  // it sways on its own phase, then wrapping to the rim. Per-particle
+  // constants are hashed from the particle's index (a fract(sin) hash —
+  // deterministic on every machine, never Math.random), so the plume's
+  // layout is identical on every load; and with positions recomputed from
+  // t each frame there is no particle state to drift or leak.
+  const SMOKE_N = 120;
+  const smokePos = new Float32Array(SMOKE_N * 3);
+  // A particle's constants, hashed from its index where update() needs them.
+  const hash1 = (n) => { const s = Math.sin(n * 12.9898) * 43758.5453; return s - Math.floor(s); };
+  const STACK_XS = [20, 23.6, 27.2];
+  const smokeGeo = new THREE.BufferGeometry();
+  smokeGeo.setAttribute('position', new THREE.BufferAttribute(smokePos, 3));
+  const smoke = new THREE.Points(smokeGeo, new THREE.PointsMaterial({
+    color: 0x9aa7b4, size: 1.5, transparent: true, opacity: 0.32,
+    depthWrite: false, sizeAttenuation: true,
+  }));
+  smoke.frustumCulled = false;
+  scene.add(smoke);
+
+  // Pose every animated part for sim time t: once per rendered frame from
+  // main's loop with G.time, and once here with 0 so the yard is never seen
+  // unposed. All curves are closed-form in t — no accumulation.
+  function updateWorld(t) {
+    jib.rotation.y = t * 0.11;
+    furnaceLight.intensity = 26 + 6 * Math.sin(t * 7.3) + 4 * Math.sin(t * 13.7 + 1.7);
+    for (const b of blinkers) {
+      if (b.kind === 'aviation') {
+        // Hard blink, ~14% duty: lit briefly, dark the rest of the second.
+        b.mat.emissiveIntensity = ((t * 0.55 + b.phase) % 1) < 0.14 ? 3.4 : 0.1;
+      } else if (b.kind === 'lamp') {
+        b.mat.emissiveIntensity = 2.1 + 0.45 * Math.sin(t * 2.1 + b.phase);
+      } else { // 'rim': the smelter rims breathe with the furnace heat
+        b.mat.emissiveIntensity = 1.5 + 0.5 * Math.sin(t * 3.1 + b.phase);
+      }
+    }
+    for (let i = 0; i < SMOKE_N; i++) {
+      const phase = hash1(i * 5 + 3);
+      const rise = (t * (0.045 + hash1(i * 5 + 4) * 0.05) + phase) % 1;
+      const sway = 0.6 + hash1(i * 5 + 5) * 1.4;
+      smokePos[i * 3] = STACK_XS[i % 3] + (hash1(i * 5 + 1) - 0.5) * 1.2
+        + Math.sin(t * 0.35 + phase * 9) * 0.35 * sway + rise * 2.6;
+      smokePos[i * 3 + 1] = 9.9 + rise * 6.8;
+      smokePos[i * 3 + 2] = -19.2 + (hash1(i * 5 + 2) - 0.5) * 1.2
+        + Math.cos(t * 0.27 + phase * 5) * 0.3 * sway + rise * 1.1;
+    }
+    smokeGeo.attributes.position.needsUpdate = true;
+  }
+  updateWorld(0);
+
+  return { sun, furnaceLight, update: updateWorld };
 }
 
-// A low-poly soldier figure for a bot: boots, legs, torso in team colour, a
-// head with a visor band, and a held rifle. Built once per bot and posed by
-// the bot brain (lean, crouch squash, death fall). Returns the group plus the
-// parts the pose code moves.
+// A low-poly soldier figure for a bot: legs, torso in team colour, a head
+// with a visor band, a held rifle. Built once per bot and posed by main.js.
+// Returns the group plus the parts the pose code moves.
 export function buildSoldier(team) {
   const color = team === 'ember' ? PALETTE.ember : PALETTE.warden;
   const dark = new THREE.MeshStandardMaterial({ color: 0x2c2f33, roughness: 0.9 });

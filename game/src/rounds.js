@@ -1,14 +1,13 @@
 // The match: a sequence of rounds between Ember (attack) and the Wardens
 // (defence). Each round runs buy -> live -> (planted) -> end. Ember wins by
-// eliminating the Wardens or detonating the charge on a site; the Wardens win
-// by eliminating Ember, running out the clock, or defusing. Money is earned
-// for kills, plants and round outcomes and spent in the buy phase; the first
-// team to 7 rounds takes the match.
+// eliminating the Wardens or detonating the charge; the Wardens by
+// eliminating Ember, running out the clock, or defusing. Money is earned for
+// kills, plants and round outcomes and spent in the buy phase; first to 7.
 import * as THREE from 'three';
 import { SPAWNS, SITES, siteAt } from './map.js';
 import { resetActor, hurtActor } from './actor.js';
 import { WEAPONS, GRENADES, ARMOR_PRICE, makeWeaponInstance } from './weapons.js';
-import { assignPlans } from './bots.js';
+import { assignPlans, replanOnPlant } from './bots.js';
 import { siteLabel } from './radio.js';
 
 export const ROUND_TIME = 100;
@@ -62,10 +61,11 @@ function buildChargeMesh(G) {
   G.scene.add(group);
   G.charge.mesh = group;
   G.charge.lightMesh = light;
+  G.charge.glow = glow; // main.js pulses both once the charge is planted
 }
 
-// Full reset for a new round: everyone back to spawn with full health, the
-// charge back in Ember hands, loadouts kept (money already in pockets).
+// Full reset for a new round: everyone back to spawn at full health, the
+// charge back in Ember hands, loadouts kept.
 export function startRound(G) {
   const round = G.round;
   round.number++;
@@ -89,8 +89,7 @@ export function startRound(G) {
       const keepArmor = actor.armorHp > 0;
       resetActor(actor, SPAWNS[team][i % SPAWNS[team].length]);
       if (!keepArmor) actor.armorHp = 0;
-      // A dead player's bought gun is gone; survivors keep theirs. Everyone
-      // refills magazines between rounds.
+      // A dead player's bought gun is gone; survivors keep theirs.
       for (const slot of ['primary', 'sidearm']) {
         const inst = actor.loadout[slot];
         if (inst) { inst.mag = WEAPONS[inst.defId].mag; }
@@ -107,38 +106,73 @@ export function startRound(G) {
   }
   assignPlans(G, G.rng);
   botBuyPhase(G);
-  G.hud.roundIntro(round.number, round.score);
-  G.hud.banner(`ROUND ${round.number}`, G.plan.site ? `Ember to plant at site ${G.plan.site}` : '', 2.4);
+  // The intro card: round, score, side and win condition in one line — the
+  // player is always Ember, so the card speaks from the attack's side.
+  G.hud.roundIntro(round.number, round.score,
+    `Ember attack — plant at the ${siteLabel(G.plan.site)}, or eliminate the Wardens · first to ${WIN_SCORE}`);
   // The plan call opens the round on team radio, from the carrier himself.
   if (G.plan.carrier) {
     G.radio.say(G.plan.carrier, `Going ${siteLabel(G.plan.site)} — stack on me`, true);
   }
 }
 
-// Bots shop with a simple team economy: save on a loss streak's first round,
-// force-buy SMGs when poor, full-buy rifles and armour when rich. The carrier
-// keeps a grenade for the entry.
+// The team economy decision, made once per team per round before anyone
+// shops, from the team's average money and loss streak:
+//
+//   team state                             mode   the bots' buys
+//   -------------------------------------  -----  ------------------------
+//   loss streak >= 2, or average < $1,600  save   no primaries; vest only
+//                                                 if $1,600 stays in pocket
+//   loss streak == 1, or average < $3,000  force  SMGs outright; Rook if
+//                                                 $900 stays back; vests last
+//   anything else                          full   per-bot rules below
+//
+// Utility (entry frag, support flash) is bought in every mode. Save and
+// force are announced on team radio (a full buy needs no call); the modes
+// stay on round.ecoModes for any reader. Bots only: the human is untouched.
+function teamEcoMode(G, team) {
+  const mates = G.actors.filter((a) => a.team === team && a.bot);
+  const avg = mates.reduce((n, a) => n + a.money, 0) / Math.max(1, mates.length);
+  const streak = G.round.lossStreak[team];
+  if (streak >= 2 || avg < 1600) return 'save';
+  if (streak === 1 || avg < 3000) return 'force';
+  return 'full';
+}
+
 function botBuyPhase(G) {
+  const round = G.round;
+  round.ecoModes = { ember: teamEcoMode(G, 'ember'), warden: teamEcoMode(G, 'warden') };
+  for (const team of ['ember', 'warden']) {
+    if (round.ecoModes[team] === 'save') G.radio.teamSay(team, 'Eco round — pistols only, save it');
+    else if (round.ecoModes[team] === 'force') G.radio.teamSay(team, 'Force buy — SMGs and vests out');
+  }
   for (const actor of G.actors) {
     if (!actor.bot || !actor.alive) continue;
+    const mode = round.ecoModes[actor.team];
     const rich = actor.money >= 3900;
     const mid = actor.money >= 2000;
     if (!actor.loadout.primary) {
-      if (rich) buyWeapon(G, actor, 'longarm');
-      else if (mid) buyWeapon(G, actor, 'dart');
-      else if (actor.money >= 1000 && G.rng.chance(0.4)) buyWeapon(G, actor, 'dart');
+      if (mode === 'full' && rich) buyWeapon(G, actor, 'longarm');
+      else if (mode === 'full' && mid) buyWeapon(G, actor, 'dart');
+      else if (mode === 'force' && actor.money >= 1250) buyWeapon(G, actor, 'dart');
+      else if (mode === 'full' && actor.money >= 1000 && G.rng.chance(0.4)) buyWeapon(G, actor, 'dart');
+      // save: no primary, whatever the pocket holds — that is the point.
     }
-    if (actor.armorHp <= 0 && actor.money >= ARMOR_PRICE + 300) buyArmor(G, actor);
+    if (actor.armorHp <= 0) {
+      if (mode === 'save') { if (actor.money >= ARMOR_PRICE + 1600) buyArmor(G, actor); }
+      else if (actor.money >= ARMOR_PRICE + 300) buyArmor(G, actor);
+    }
     if (!actor.loadout.sidearm || actor.loadout.sidearm.defId === 'sidearm') {
-      if (actor.money >= 2900 && G.rng.chance(0.5)) buyWeapon(G, actor, 'rook');
+      if (mode === 'force' && actor.money >= 1350) buyWeapon(G, actor, 'rook');
+      else if (mode === 'full' && actor.money >= 2900 && G.rng.chance(0.5)) buyWeapon(G, actor, 'rook');
     }
     // Utility follows the plan role: the entry carries a frag for the site,
-    // support carries the entry flash, the rest buy on a rich round.
+    // support carries the entry flash. Utility is bought in every mode.
     if (!actor.loadout.grenades.length) {
       const role = actor.bot.planRole;
       if (role === 'entry' && actor.money >= 300) buyGrenade(G, actor, 'frag');
       else if (role === 'support' && actor.money >= 200) buyGrenade(G, actor, 'flash');
-      else if (actor.money >= 2400 && G.rng.chance(0.45)) {
+      else if (mode !== 'save' && actor.money >= 2400 && G.rng.chance(0.45)) {
         buyGrenade(G, actor, G.rng.chance(0.5) ? 'frag' : 'flash');
       }
     }
@@ -176,9 +210,8 @@ export function buyGrenade(G, actor, kind) {
 
 // --- plant / defuse channels -------------------------------------------------
 
-// The plant/defuse callout, throttled per bot: a channel can be cancelled
-// and restarted step after step as a bot settles onto the spot, and the
-// radio must not repeat itself each time.
+// The plant/defuse callout, throttled per bot: a channel can churn as a bot
+// settles onto the spot, and the radio must not repeat itself each time.
 function objectiveCall(G, actor, text) {
   if (!actor.bot || G.time - actor.bot.objCallAt < 8) return;
   actor.bot.objCallAt = G.time;
@@ -248,8 +281,9 @@ function completePlant(G, actor, site) {
   G.audio.plantBeep(true);
   G.hud.banner('CHARGE PLANTED', `Site ${site.id} — ${site.name}`, 2.2);
   G.bus.emit(site.plantX, site.plantZ, 'ember', 60, 'plant', G.time);
-  G.radio.teamSay('ember', 'Charge planted — hold positions');
-  G.radio.teamSay('warden', 'Charge is down — retake, now');
+  // Both teams re-plan around the planted charge (bots.js): routes and
+  // stale engagements drop, the defence converges, the calls are made there.
+  replanOnPlant(G);
 }
 
 function completeDefuse(G, actor) {
@@ -275,8 +309,7 @@ export function stepRound(G, dt) {
   } else if (round.phase === 'live') {
     if (round.timer <= 0) endRound(G, 'warden', 'Time expired — site held');
   } else if (round.phase === 'planted') {
-    // The planted charge beeps faster as it runs down.
-    const remain = round.timer;
+    const remain = round.timer; // the planted charge beeps faster as it runs down
     const interval = remain < 5 ? 0.25 : remain < 12 ? 0.5 : 1;
     if (G.time >= G.charge.beepAt) {
       G.charge.beepAt = G.time + interval;
@@ -296,9 +329,8 @@ export function stepRound(G, dt) {
     }
   }
 
-  // Elimination check (not during buy: nobody can be dead yet, and not after
-  // the charge is planted for the defending side — Wardens must defuse or
-  // die, Ember wins a planted round even if its last player falls).
+  // Elimination check (not during buy: nobody can be dead yet; after a
+  // plant, Ember wins the round even if its last player falls).
   if (round.phase === 'live' || round.phase === 'planted') {
     const emberAlive = G.actors.some((a) => a.team === 'ember' && a.alive);
     const wardenAlive = G.actors.some((a) => a.team === 'warden' && a.alive);

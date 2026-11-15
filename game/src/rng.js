@@ -1,7 +1,6 @@
-// A tiny deterministic random source (mulberry32). The whole simulation draws
-// from one of these, seeded per match, so a screenshot setup with a fixed seed
-// composes the exact same frame on every machine, and bot behaviour in a live
-// game never depends on Math.random.
+// A tiny deterministic random source (mulberry32). The whole simulation
+// draws from one of these, seeded per match, so a screenshot setup with a
+// fixed seed composes the exact same frame on every machine.
 export function mulberry32(initialSeed) {
   let a = initialSeed | 0;
   return function next() {
@@ -21,12 +20,12 @@ export function createRng(seed) {
     pick(list) { return list[Math.floor(next() * list.length)]; },
     chance(p) { return next() < p; },
     // A point in a cone of half-angle `spreadRad` around a unit direction,
-    // returned by writing into `out` (no allocation in the firing loop).
+    // written into `out` (no allocation in the firing loop).
     cone(dir, spreadRad, out) {
       const a = next() * Math.PI * 2;
       const r = Math.sqrt(next()) * spreadRad;
-      // Orthonormal basis around the unit direction: pick a helper axis that
-      // is not near-parallel to dir, then tangent = helper x dir.
+      // Orthonormal basis around the direction: helper axis not near-parallel
+      // to dir, then tangent = helper x dir.
       const hx = Math.abs(dir.y) < 0.99 ? 0 : 1;
       const hy = Math.abs(dir.y) < 0.99 ? 1 : 0;
       let tx = hy * dir.z;

@@ -1,26 +1,24 @@
-// Foundry District — design overview.
-// A round-based tactical FPS, five a side, on one original map. Systems:
-//   rounds/economy  rounds.js — buy/live/planted/end phases, per-role bot
-//                   buys, plant/defuse channels, loss-streak money.
-//   bot plans       bots.js — named roles (entry, support, flex, lurker,
-//                   anchor) on a waypoint graph; vision cones + hearing.
+// Foundry District — design overview. A round-based tactical FPS, five a
+// side, on one original map. Systems:
+//   rounds/economy  rounds.js — buy/live/planted/end phases, a team eco
+//                   decision per round, plant/defuse channels, loss money.
+//   bot plans       bots.js — named roles on a waypoint graph, vision cones
+//                   + hearing, mid-round re-plans (site commit, plant).
 //   hearing bus     bus.js — every shot, blast and plant is a noise event;
 //                   perception and radio both read the one bus.
-//   team radio      radio.js — plan calls, contact callouts naming zones,
-//                   plant/defuse/win calls, drawn in the HUD radio log.
-//   minimap         minimap.js — sites, geometry, teammates, fresh enemy
-//                   spottings (published by brains to G.spotted), charge.
-//   gunplay         weapons.js + actor.js — spread/recoil model, per-weapon
-//                   armour penetration, three hitbox bands, grenade physics.
-//   world           world.js + map.js — one collider list drives rendering,
-//                   collision, line-of-sight and pathing alike.
-// Boot, the fixed-step simulation loop, the local player's controller, and
-// the deterministic screenshot setups live here. The simulation always
-// advances in 1/60 steps from an accumulator; rendering happens per frame
-// and only reads state. One state object, G, is shared by every module.
-//
-// ?shot=start|buy|play|end&seed=N composes one deterministic frame (no
-// pointer lock, no timers), renders it, freezes, and sets window.__shotReady.
+//   team radio      radio.js — plan/contact/plant/win calls in the HUD log.
+//   minimap         minimap.js — geometry, teammates, spottings, charge.
+//   scoreboard      scoreboard.js — ten players (role, K/D, money, alive);
+//                   auto at round end, Tab by hand.
+//   living world    world.js update(t) — crane jib, blinking lights, furnace
+//                   smoke, all posed from the sim clock (below).
+//   gunplay         weapons.js + actor.js — spread/recoil, armour pen,
+//                   three hitbox bands, grenade physics.
+// Boot, the fixed-step loop, the player controller and the screenshot setups
+// live here. The simulation advances in 1/60 steps from an accumulator;
+// rendering per frame only reads state. One state object, G, is shared.
+// ?shot=start|buy|play|end&seed=N composes one deterministic frame,
+// renders it, freezes, sets window.__shotReady.
 import * as THREE from 'three';
 import { PALETTE } from './palette.js';
 import { createRng } from './rng.js';
@@ -39,9 +37,10 @@ import { createBrain, stepBot } from './bots.js';
 import { createBus } from './bus.js';
 import { createRadio } from './radio.js';
 import { createMinimap } from './minimap.js';
+import { createScoreboard } from './scoreboard.js';
 import {
   createMatch, startRound, stepRound, buyWeapon, buyArmor, buyGrenade,
-  requestPlant, requestDefuse, BUY_TIME,
+  requestPlant, requestDefuse,
 } from './rounds.js';
 
 const FIXED_STEP = 1 / 60;
@@ -49,7 +48,7 @@ const params = new URLSearchParams(window.location.search);
 const shot = params.get('shot');
 const seed = Number.parseInt(params.get('seed') ?? '1', 10) || 1;
 
-// --- renderer / scene ---------------------------------------------------------
+// --- renderer / scene ---
 
 const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
@@ -62,9 +61,9 @@ const scene = new THREE.Scene();
 const camera = new THREE.PerspectiveCamera(74, window.innerWidth / window.innerHeight, 0.05, 160);
 camera.rotation.order = 'YXZ';
 scene.add(camera);
-createWorld(scene);
+const worldAnim = createWorld(scene); // its update(t) poses the living world
 
-// --- the shared game state ------------------------------------------------------
+// --- the shared game state ---
 
 const G = {
   scene, camera, renderer,
@@ -75,7 +74,7 @@ const G = {
   playerEye: new THREE.Vector3(),
   effects: createEffects(scene),
   audio: createAudio(),
-  hud: createHud(),
+  hud: createHud(!!shot),
   colliders: COLLIDERS,
   grenades: [],
   bus: createBus(),       // hearing bus: all noise events (bus.js)
@@ -96,8 +95,9 @@ const G = {
 
 G.radio = createRadio(G);
 const minimap = createMinimap(G);
+const scoreboard = createScoreboard(G);
 
-// --- cast -----------------------------------------------------------------------
+// --- cast ---
 
 const EMBER_BOTS = ['Vex', 'Ondo', 'Pell', 'Sorin'];
 const WARDEN_BOTS = ['Sable', 'Rurik', 'Tamsin', 'Yara', 'Mira'];
@@ -149,12 +149,15 @@ function onKill(attacker, victim, headshot, def) {
   }
   const chest = new THREE.Vector3(victim.pos.x, victim.pos.y + 1.1, victim.pos.z);
   G.effects.deathPuff(chest);
+  // The feed names the weapon: the firing def when there is one, the frag
+  // when a grenade did it (attacker set, def null), the charge itself
+  // when its detonation did (no attacker).
+  const weaponName = def ? def.name : (attacker ? 'Frag Grenade' : 'Charge');
   G.hud.kill(attacker ? attacker.name : null, victim.name, headshot,
-    attacker ? attacker.team : (victim.team === 'ember' ? 'warden' : 'ember'));
-  void def;
+    attacker ? attacker.team : (victim.team === 'ember' ? 'warden' : 'ember'), weaponName);
 }
 
-// --- player controller ------------------------------------------------------------
+// --- player controller ---
 
 const input = createInput(renderer.domElement, (locked) => {
   if (!locked && started && !G.round.over && !shot) overlay.hidden = false;
@@ -243,6 +246,7 @@ function stepPlayer(dt) {
       if (pressed.has(`Digit${i + 1}`) && G.hud.buyVisible) doBuy(i);
     }
   }
+  if (pressed.has('Tab')) scoreboard.toggle();
   if (pressed.has('KeyR')) startReload(G, player);
   if (pressed.has('Digit1')) setSlot('primary');
   if (pressed.has('Digit2')) setSlot('sidearm');
@@ -280,7 +284,7 @@ function stepPlayer(dt) {
   prevFiring = input.firing;
 }
 
-// --- bot meshes ---------------------------------------------------------------------
+// --- bot meshes ---
 
 function poseActors() {
   for (const actor of G.actors) {
@@ -298,20 +302,16 @@ function poseActors() {
     actor.mesh.legR.rotation.x = -swing;
     g.position.y = Math.abs(Math.sin(actor.stepPhase)) * 0.045 * Math.min(1, actor.speedNow / 4);
     g.scale.y = actor.crouch ? 0.8 : 1;
-    // The carrier wears the charge on its back.
-    const isCarrier = actor.bot && actor.bot.hasCharge && G.charge.state === 'carried';
+    const isCarrier = actor.bot && actor.bot.hasCharge && G.charge.state === 'carried'; // carrier wears the charge
     if (isCarrier) {
       G.charge.mesh.visible = true;
       G.charge.mesh.position.set(actor.pos.x, 1.15, actor.pos.z);
       G.charge.mesh.rotation.y = actor.yaw + Math.PI;
     }
   }
-  if (G.plan.carrier && !G.plan.carrier.alive && G.charge.state === 'carried') {
-    // handled by onKill transfer; nothing to draw
-  }
 }
 
-// --- the fixed-step loop --------------------------------------------------------------
+// --- the fixed-step loop ---
 
 const _botWish = { x: 0, z: 0, crouch: false, walk: false, jump: false };
 let lastPhase = '';
@@ -326,6 +326,15 @@ function step(dt) {
     if (phase === 'buy' && player.alive && !shot) G.hud.showBuy(player, G.round);
     if (phase !== 'buy') G.hud.hideBuy();
   }
+
+  // The planted charge breathes: beacon and glow pulse on the sim clock.
+  // Presentation only — the detonation time is round.timer's alone.
+  if (G.charge.state === 'planted') {
+    const pulse = 0.5 + 0.5 * Math.sin(G.time * 7);
+    G.charge.lightMesh.material.emissiveIntensity = 1.7 + pulse * 2.1;
+    if (G.charge.glow) G.charge.glow.intensity = 2 + pulse * 3.5;
+  }
+  scoreboard.update();
 
   const frozen = phase === 'buy' || phase === 'end';
   if (!frozen) {
@@ -404,10 +413,11 @@ function frame(now) {
   G.effects.update(Math.min(0.05, dtMs / 1000));
   G.hud.update();
   minimap.draw();
+  worldAnim.update(G.time); // the living world is posed by the sim clock
   renderer.render(scene, camera);
 }
 
-// --- screenshot setups -----------------------------------------------------------------
+// --- screenshot setups ---
 
 function giveKit(actor, primaryId, money, armor) {
   actor.money = money;
@@ -429,8 +439,7 @@ function setupShot(name) {
   const wardens = G.actors.filter((a) => a.team === 'warden');
 
   if (name === 'start') {
-    // The cover: a first-person round intro — rifle up at the west mouth of
-    // mid, teammates fanning out, the smelter stacks glowing ahead.
+    // The cover: a first-person round intro at the west mouth of mid.
     G.round.phase = 'live';
     G.round.timer = 96;
     giveKit(player, 'longarm', 800, false);
@@ -448,8 +457,7 @@ function setupShot(name) {
     place(wardens[3], 24, -14, Math.PI / 2);
     place(wardens[4], 22, 12, Math.PI / 2);
     G.spotted.set(wardens[0].id, { x: wardens[0].pos.x, z: wardens[0].pos.z, at: G.time });
-    // The plan call went out in startRound; support answers it.
-    G.radio.say(emberBots[1], 'Copy — flash ready', true);
+    G.radio.say(emberBots[1], 'Copy — flash ready', true); // support answers the plan call
     G.hud.banner('ROUND 1', 'Foundry District — plant at the Smelter or the Depot', 30);
     const eye = new THREE.Vector3(); eyePos(player, eye);
     camera.position.copy(eye);
@@ -508,10 +516,14 @@ function setupShot(name) {
     G.effects.tracer(muzzle, hit);
     G.effects.muzzleFlash(muzzle, dir);
     G.effects.impact(hit, true);
-    G.hud.kill('You', 'Mira', false, 'ember');
-    G.hud.kill('Sable', 'Sorin', false, 'warden');
+    G.hud.kill('You', 'Mira', false, 'ember', 'Longarm AR');
+    G.hud.kill('Sable', 'Sorin', false, 'warden', 'Dart-9 SMG');
     wardens[4].alive = false; wardens[4].hp = 0;
     emberBots[3].alive = false; emberBots[3].hp = 0;
+    // The fight is on the player too: a hitmarker from the shot just fired
+    // and the damage wedge pointing at w0, near enough dead ahead.
+    G.hud.hitmarker(false, false);
+    G.hud.damageFrom(0.05);
     camera.position.copy(eye);
     camera.rotation.set(player.pitch, player.yaw, 0);
   } else if (name === 'end') {
@@ -532,15 +544,30 @@ function setupShot(name) {
     wardens[1].alive = false; wardens[1].hp = 0; place(wardens[1], 20.5, -18.5, 0);
     place(wardens[2], 27, -6, Math.PI / 2);
     G.effects.explosion(new THREE.Vector3(SITES.A.plantX, 0.4, SITES.A.plantZ));
+    G.round.winner = 'ember';
+    G.round.winReason = 'Charge detonated';
     G.hud.roundEnd('ember', 'Charge detonated', G.round.score);
     G.radio.say(emberBots[0], 'Charge planted — hold positions', true);
     G.radio.say(emberBots[1], 'Site is ours — round won', true);
+    // The scoreboard the round ends on: a match's worth of lines, so the
+    // panel shows real bookkeeping, not a blank table.
+    const lines = [
+      [player, 9, 4, 3900], [emberBots[0], 7, 5, 4100], [emberBots[1], 5, 6, 2350],
+      [emberBots[2], 4, 5, 2900], [emberBots[3], 3, 6, 1800],
+      [wardens[0], 6, 6, 2400], [wardens[1], 5, 6, 1950], [wardens[2], 6, 5, 3300],
+      [wardens[3], 4, 5, 2600], [wardens[4], 2, 6, 1200],
+    ];
+    for (const [actor, k, d, money] of lines) {
+      actor.kills = k; actor.deaths = d; actor.money = money;
+    }
+    scoreboard.update(); // phase 'end': the board shows itself
     const eye = new THREE.Vector3(); eyePos(player, eye);
     camera.position.copy(eye);
     camera.rotation.set(player.pitch, player.yaw, 0);
     G.effects.update(0.16); // let the fireball bloom before the frame freezes
     G.effects.update(0.05);
   }
+  worldAnim.update(7.35); // pose the living world mid-breath for the still
   poseActors();
   G.hud.setVitals(player);
   refreshAmmoHud();

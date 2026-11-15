@@ -1,8 +1,7 @@
 // All sound is synthesised with WebAudio: no audio files, nothing fetched.
-// Short filtered-noise bursts make gunfire, filtered tones make the charge's
-// beeps and the round stingers. The context is created lazily on the first
-// user gesture (browsers refuse it earlier); until then every call is a no-op,
-// which also keeps screenshot mode silent and deterministic.
+// Filtered-noise bursts make gunfire; filtered tones make the charge's beeps
+// and the round stingers. The context is created lazily on the first user
+// gesture (browsers refuse it earlier); until then every call is a no-op.
 export function createAudio() {
   let ctx = null;
   let master = null;
