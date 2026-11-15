@@ -2,7 +2,10 @@
 // viewmodel the player sees. Accuracy is the heart of it: spread grows with
 // movement, with sustained fire (bloom) and in the air, and shrinks when a
 // shooter stops or crouches — so the game's gunplay rewards the pause-and-tap
-// rhythm of a tactical shooter, not the spray.
+// rhythm of a tactical shooter, not the spray. Each weapon also carries an
+// armour-penetration value (pen): the Pike ignores a vest entirely, the
+// Longarm defeats most of one, the pistols and SMG are blunted by it — see
+// hurtActor in actor.js. Every shot and blast is emitted on the hearing bus.
 import * as THREE from 'three';
 import { raycastWorld } from './map.js';
 import { eyePos, lookDir, rayHitActor, hurtActor } from './actor.js';
@@ -12,31 +15,31 @@ export const WEAPONS = {
     id: 'sidearm', name: 'P9 Sidearm', slot: 'sidearm', price: 0,
     damage: 26, rpm: 360, auto: false, mag: 12, reserve: 48, reload: 1.35,
     spread: 0.55, moveSpread: 1.5, bloomPerShot: 0.35, recoil: 0.011,
-    range: 42, kind: 'pistol', zoom: 1,
+    range: 42, pen: 0.5, kind: 'pistol', zoom: 1,
   },
   rook: {
     id: 'rook', name: 'Rook .45', slot: 'sidearm', price: 450,
     damage: 34, rpm: 330, auto: false, mag: 15, reserve: 60, reload: 1.5,
     spread: 0.45, moveSpread: 1.4, bloomPerShot: 0.32, recoil: 0.015,
-    range: 46, kind: 'pistol', zoom: 1,
+    range: 46, pen: 0.6, kind: 'pistol', zoom: 1,
   },
   dart: {
     id: 'dart', name: 'Dart-9 SMG', slot: 'primary', price: 1250,
     damage: 22, rpm: 820, auto: true, mag: 32, reserve: 128, reload: 2.0,
     spread: 0.85, moveSpread: 1.1, bloomPerShot: 0.16, recoil: 0.007,
-    range: 38, kind: 'smg', zoom: 1,
+    range: 38, pen: 0.55, kind: 'smg', zoom: 1,
   },
   longarm: {
     id: 'longarm', name: 'Longarm AR', slot: 'primary', price: 2700,
     damage: 36, rpm: 600, auto: true, mag: 30, reserve: 120, reload: 2.3,
     spread: 0.5, moveSpread: 1.9, bloomPerShot: 0.22, recoil: 0.012,
-    range: 70, kind: 'rifle', zoom: 1,
+    range: 70, pen: 0.75, kind: 'rifle', zoom: 1,
   },
   pike: {
     id: 'pike', name: 'Pike Longshot', slot: 'primary', price: 4300,
     damage: 96, rpm: 48, auto: false, mag: 5, reserve: 25, reload: 2.9,
     spread: 0.06, moveSpread: 6.0, bloomPerShot: 1.4, recoil: 0.055,
-    range: 120, kind: 'sniper', zoom: 3.2,
+    range: 120, pen: 1.0, kind: 'sniper', zoom: 3.2,
   },
 };
 
@@ -126,7 +129,7 @@ export function fireHitscan(G, shooter) {
     _hitPoint.copy(_eye).addScaledVector(_shotDir, victimT);
     const falloff = victimT <= def.range ? 1 : Math.max(0.35, 1 - (victimT - def.range) / 60);
     if (victim.bot) victim.bot.lastHurtBy = shooter; // being shot at reveals the shooter
-    const died = hurtActor(victim, def.damage * hitMult * falloff);
+    const died = hurtActor(victim, def.damage * hitMult * falloff, def.pen);
     G.effects.impact(_hitPoint, true);
     G.effects.tracer(_muzzle, _hitPoint);
     if (shooter.isPlayer) {
@@ -144,7 +147,7 @@ export function fireHitscan(G, shooter) {
   G.audio.shot(def.kind === 'sniper' ? 'sniper' : def.kind === 'smg' ? 'smg' : def.kind === 'pistol' ? 'pistol' : 'rifle',
     shooter.isPlayer ? 0 : _eye.distanceTo(G.playerEye));
   // Gunfire is information: every bot in earshot learns where it came from.
-  G.soundEvents.push({ x: shooter.pos.x, z: shooter.pos.z, team: shooter.team, time: G.time, radius: 30 });
+  G.bus.emit(shooter.pos.x, shooter.pos.z, shooter.team, 30, 'shot', G.time);
   // Recoil climbs the view; a human fights it with the mouse, a bot's aim
   // error model absorbs it.
   shooter.pitch = Math.min(1.35, shooter.pitch + def.recoil * (0.75 + G.rng.next() * 0.5));
@@ -280,6 +283,7 @@ function detonate(G, g) {
   // Frag: radial damage, quartered by hard cover between the blast and body.
   G.audio.explosion();
   G.effects.explosion(g.pos);
+  G.bus.emit(g.pos.x, g.pos.z, g.thrower.team, 34, 'explosion', G.time);
   for (const actor of G.actors) {
     if (!actor.alive) continue;
     _chest.set(actor.pos.x, actor.pos.y + 1.0, actor.pos.z);
@@ -290,7 +294,7 @@ function detonate(G, g) {
     if (actor.team === g.thrower.team && actor !== g.thrower) dmg *= 0.35;
     if (dmg < 4) continue;
     if (actor.bot) actor.bot.lastHurtBy = g.thrower;
-    const died = hurtActor(actor, dmg);
+    const died = hurtActor(actor, dmg, 0.35); // frag shrapnel defeats little armour
     if (actor.isPlayer) { G.audio.hurt(); G.hud.damageFlash(); }
     if (died) G.onKill(g.thrower, actor, false, null);
   }

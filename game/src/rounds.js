@@ -9,6 +9,7 @@ import { SPAWNS, SITES, siteAt } from './map.js';
 import { resetActor, hurtActor } from './actor.js';
 import { WEAPONS, GRENADES, ARMOR_PRICE, makeWeaponInstance } from './weapons.js';
 import { assignPlans } from './bots.js';
+import { siteLabel } from './radio.js';
 
 export const ROUND_TIME = 100;
 export const PLANT_TIME = 3;
@@ -76,7 +77,8 @@ export function startRound(G) {
   G.channel = null;
   G.playerHasCharge = true; // the human Ember player always carries a charge
   G.grenades.length = 0;
-  G.soundEvents.length = 0;
+  G.bus.clear();
+  G.spotted.clear();
   G.charge.state = 'carried';
   G.charge.site = null;
   G.charge.mesh.visible = false;
@@ -107,6 +109,10 @@ export function startRound(G) {
   botBuyPhase(G);
   G.hud.roundIntro(round.number, round.score);
   G.hud.banner(`ROUND ${round.number}`, G.plan.site ? `Ember to plant at site ${G.plan.site}` : '', 2.4);
+  // The plan call opens the round on team radio, from the carrier himself.
+  if (G.plan.carrier) {
+    G.radio.say(G.plan.carrier, `Going ${siteLabel(G.plan.site)} — stack on me`, true);
+  }
 }
 
 // Bots shop with a simple team economy: save on a loss streak's first round,
@@ -126,10 +132,15 @@ function botBuyPhase(G) {
     if (!actor.loadout.sidearm || actor.loadout.sidearm.defId === 'sidearm') {
       if (actor.money >= 2900 && G.rng.chance(0.5)) buyWeapon(G, actor, 'rook');
     }
-    if (actor.bot.hasCharge && actor.money >= 300 && !actor.loadout.grenades.length) {
-      buyGrenade(G, actor, 'frag');
-    } else if (actor.money >= 2400 && actor.loadout.grenades.length < 1 && G.rng.chance(0.45)) {
-      buyGrenade(G, actor, G.rng.chance(0.5) ? 'frag' : 'flash');
+    // Utility follows the plan role: the entry carries a frag for the site,
+    // support carries the entry flash, the rest buy on a rich round.
+    if (!actor.loadout.grenades.length) {
+      const role = actor.bot.planRole;
+      if (role === 'entry' && actor.money >= 300) buyGrenade(G, actor, 'frag');
+      else if (role === 'support' && actor.money >= 200) buyGrenade(G, actor, 'flash');
+      else if (actor.money >= 2400 && G.rng.chance(0.45)) {
+        buyGrenade(G, actor, G.rng.chance(0.5) ? 'frag' : 'flash');
+      }
     }
     actor.activeSlot = actor.loadout.primary ? 'primary' : 'sidearm';
   }
@@ -165,6 +176,15 @@ export function buyGrenade(G, actor, kind) {
 
 // --- plant / defuse channels -------------------------------------------------
 
+// The plant/defuse callout, throttled per bot: a channel can be cancelled
+// and restarted step after step as a bot settles onto the spot, and the
+// radio must not repeat itself each time.
+function objectiveCall(G, actor, text) {
+  if (!actor.bot || G.time - actor.bot.objCallAt < 8) return;
+  actor.bot.objCallAt = G.time;
+  G.radio.say(actor, text, true);
+}
+
 export function requestPlant(G, actor) {
   const round = G.round;
   if (round.phase !== 'live' || G.charge.state !== 'carried') return;
@@ -174,6 +194,7 @@ export function requestPlant(G, actor) {
   if (!site) return;
   if (G.channel && G.channel.actor === actor && G.channel.kind === 'plant') return;
   G.channel = { actor, kind: 'plant', t: 0, need: PLANT_TIME, site };
+  objectiveCall(G, actor, 'Planting — cover me');
 }
 
 export function requestDefuse(G, actor) {
@@ -182,6 +203,7 @@ export function requestDefuse(G, actor) {
   if (Math.hypot(actor.pos.x - G.charge.x, actor.pos.z - G.charge.z) > 1.7) return;
   if (G.channel && G.channel.actor === actor && G.channel.kind === 'defuse') return;
   G.channel = { actor, kind: 'defuse', t: 0, need: DEFUSE_TIME };
+  objectiveCall(G, actor, 'Defusing — cover me');
 }
 
 function stepChannel(G, dt) {
@@ -225,7 +247,9 @@ function completePlant(G, actor, site) {
   round.timer = CHARGE_TIME;
   G.audio.plantBeep(true);
   G.hud.banner('CHARGE PLANTED', `Site ${site.id} — ${site.name}`, 2.2);
-  G.soundEvents.push({ x: site.plantX, z: site.plantZ, team: 'ember', time: G.time, radius: 60 });
+  G.bus.emit(site.plantX, site.plantZ, 'ember', 60, 'plant', G.time);
+  G.radio.teamSay('ember', 'Charge planted — hold positions');
+  G.radio.teamSay('warden', 'Charge is down — retake, now');
 }
 
 function completeDefuse(G, actor) {
@@ -324,4 +348,6 @@ function endRound(G, winner, reason) {
     if (winner === G.player.team) G.audio.roundWin(); else G.audio.roundLose();
   }
   G.hud.roundEnd(winner, reason, round.score);
+  G.radio.teamSay(winner, winner === 'ember' ? 'Site is ours — round won' : 'Round ours — reset and hold');
+  G.radio.teamSay(loser, 'Fall back — save what you can');
 }

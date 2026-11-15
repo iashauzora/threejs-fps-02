@@ -15,6 +15,7 @@ export function createHud() {
   const clock = el('clock'), scoreEmber = el('score-ember'), scoreWarden = el('score-warden');
   const aliveEmber = el('alive-ember'), aliveWarden = el('alive-warden');
   const feed = el('killfeed');
+  const radioLog = el('radio-log');
   const banner = el('banner'), bannerTitle = el('banner-title'), bannerSub = el('banner-sub');
   const channelBox = el('channel'), channelFill = el('channel-fill'), channelLabel = el('channel-label');
   const buyMenu = el('buy-menu'), buyRows = el('buy-rows'), buyMoney = el('buy-money');
@@ -76,6 +77,22 @@ export function createHud() {
       while (feed.children.length > 5) feed.lastChild.remove();
       setTimeout(() => row.classList.add('fade'), 3600);
       setTimeout(() => row.remove(), 4300);
+    },
+    // One team-radio callout: speaker in team colour, text after it. Lines
+    // stack newest-first under the minimap and fade like the killfeed.
+    radio(name, team, text) {
+      const row = document.createElement('div');
+      row.className = 'radio-row';
+      const who = document.createElement('span');
+      who.textContent = `▸ ${name}`;
+      who.className = team === 'ember' ? 'team-ember' : 'team-warden';
+      const what = document.createElement('span');
+      what.textContent = ` ${text}`;
+      row.append(who, what);
+      radioLog.prepend(row);
+      while (radioLog.children.length > 4) radioLog.lastChild.remove();
+      setTimeout(() => row.classList.add('fade'), 4200);
+      setTimeout(() => row.remove(), 4900);
     },
     banner(title, sub, seconds) {
       bannerTitle.textContent = title;

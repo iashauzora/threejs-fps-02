@@ -13,7 +13,8 @@ export const TEAM_EMBER = 'ember';   // attackers: plant the charge
 export const TEAM_WARDEN = 'warden'; // defenders: stop them
 
 // kind: 'wall' (full height steel), 'block' (building), 'crate' (timber),
-// 'stack' (double crate), 'machine' (smelter iron), 'container' (depot steel).
+// 'stack' (double crate), 'machine' (smelter iron), 'container' (depot steel),
+// 'barrel' (fuel drum cluster), 'pipe' (low pipe run).
 // h is the box height; boxes under 1.35 high are cover you can see over when
 // standing, everything taller blocks sight completely.
 function box(minX, maxX, minZ, maxZ, h, kind) {
@@ -70,6 +71,25 @@ export const COLLIDERS = [
   box(-27, -25.8, 6.8, 8, 1.1, 'crate'),
   box(26.4, 27.6, -8.6, -7.4, 1.1, 'crate'),
   box(26.4, 27.6, 7.4, 8.6, 1.1, 'crate'),
+  // Dressing that is also cover (v2): barrel clusters at the lane mouths and
+  // along the mid diagonals, low pipe runs under the separator buildings'
+  // door lines, and extra stacks breaking up the long lane sightlines. Every
+  // box here keeps the waypoint lanes (checked in the build's graph test)
+  // and sits off the straight spawn-to-site walks.
+  box(-16.6, -15.8, -3.2, -2.4, 1.0, 'barrel'),
+  box(-16.6, -15.8, 2.4, 3.2, 1.0, 'barrel'),
+  box(3.2, 4.0, -4.6, -3.8, 1.0, 'barrel'),
+  box(3.2, 4.0, 3.8, 4.6, 1.0, 'barrel'),
+  box(14.6, 15.4, -8.6, -7.8, 1.0, 'barrel'),
+  box(14.6, 15.4, 7.8, 8.6, 1.0, 'barrel'),
+  box(-20.4, -19.6, -11.4, -10.6, 1.0, 'barrel'),
+  box(-20.4, -19.6, 10.6, 11.4, 1.0, 'barrel'),
+  box(-4, 0, -4.6, -4.1, 0.9, 'pipe'),
+  box(-4, 0, 4.1, 4.6, 0.9, 'pipe'),
+  box(0.4, 1.6, -18.6, -17.4, 2.2, 'stack'),
+  box(0.4, 1.6, 17.4, 18.6, 2.2, 'stack'),
+  box(20.2, 21.4, -6.4, -5.2, 1.1, 'crate'),
+  box(20.2, 21.4, 5.2, 6.4, 1.1, 'crate'),
 ];
 
 // Sight blockers: only boxes tall enough to hide a standing actor.
@@ -92,12 +112,14 @@ export function siteAt(x, z) {
 // west edge faces east with yaw -PI/2 and the Wardens face west with +PI/2.
 export const SPAWNS = {
   ember: [
-    { x: -29, z: -3, yaw: -Math.PI / 2 }, { x: -29, z: -1, yaw: -Math.PI / 2 },
-    { x: -29, z: 1, yaw: -Math.PI / 2 }, { x: -29, z: 3, yaw: -Math.PI / 2 },
+    { x: -29, z: -4, yaw: -Math.PI / 2 }, { x: -29, z: -2, yaw: -Math.PI / 2 },
+    { x: -29, z: 0, yaw: -Math.PI / 2 }, { x: -29, z: 2, yaw: -Math.PI / 2 },
+    { x: -29, z: 4, yaw: -Math.PI / 2 },
   ],
   warden: [
-    { x: 29.2, z: -6, yaw: Math.PI / 2 }, { x: 29.2, z: -2, yaw: Math.PI / 2 },
-    { x: 29.2, z: 2, yaw: Math.PI / 2 }, { x: 29.2, z: 6, yaw: Math.PI / 2 },
+    { x: 29.2, z: -8, yaw: Math.PI / 2 }, { x: 29.2, z: -4, yaw: Math.PI / 2 },
+    { x: 29.2, z: 0, yaw: Math.PI / 2 }, { x: 29.2, z: 4, yaw: Math.PI / 2 },
+    { x: 29.2, z: 8, yaw: Math.PI / 2 },
   ],
 };
 

@@ -82,6 +82,11 @@
   #ammo-reserve { font-size: 15px; color: var(--muted); }
   #weapon-name { font-size: 12px; color: var(--muted); letter-spacing: .06em; text-transform: uppercase; margin-top: 2px; }
 
+  #minimap { position: fixed; left: 26px; top: 14px; width: 184px; height: 138px; border: 1px solid var(--hairline); border-radius: 6px; background: #232a33; }
+  #radio-log { position: fixed; left: 26px; top: 162px; width: 300px; display: grid; gap: 4px; }
+  .radio-row { padding: 4px 9px; font-size: 12.5px; font-family: var(--font-readout); background: color-mix(in srgb, var(--surface) 72%, transparent); border-left: 2px solid var(--hairline); border-radius: 3px; transition: opacity .6s; }
+  .radio-row.fade { opacity: 0; }
+
   #killfeed { position: fixed; right: 26px; top: 76px; display: grid; gap: 5px; justify-items: end; }
   .feed-row { padding: 4px 10px; font-size: 13px; font-family: var(--font-readout); background: color-mix(in srgb, var(--surface) 78%, transparent); border-radius: 4px; transition: opacity .6s; }
   .feed-row.fade { opacity: 0; }
@@ -137,6 +142,8 @@
     <span class="score-side" id="score-warden">0</span>
   </div>
   <div id="objective"></div>
+  <canvas id="minimap" width="184" height="138"></canvas>
+  <div id="radio-log"></div>
   <div id="vitals" class="panel-box">
     <div class="vital-row"><span id="health-value">100</span><span id="armor-value">0</span></div>
     <div class="bar"><i id="health-bar"></i></div>
@@ -169,7 +176,7 @@
 <div id="overlay" class="overlay">
   <section class="panel" role="dialog" aria-modal="true" aria-labelledby="overlay-title">
     <h1 id="overlay-title">Foundry <em>District</em></h1>
-    <p id="overlay-copy">A round-based tactical shooter in a decommissioned smelting yard. You lead Ember: plant the charge at the Smelter or the Depot, or wipe the Wardens. First to 7 rounds. Stopping to aim beats spraying — every time.</p>
+    <p id="overlay-copy">A round-based tactical shooter in a decommissioned smelting yard, five a side. You lead Ember: plant the charge at the Smelter or the Depot, or wipe the Wardens. Your bots call their plans and contacts on team radio — watch the minimap, listen for the calls. First to 7 rounds. Stopping to aim beats spraying — every time.</p>
     <button id="play" type="button">Click to play</button>
     <ul class="keys">
       <li><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> Move · <kbd>Shift</kbd> Walk · <kbd>Ctrl</kbd> Crouch · <kbd>Space</kbd> Jump</li>

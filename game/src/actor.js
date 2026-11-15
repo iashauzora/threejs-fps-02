@@ -132,13 +132,16 @@ export function rayHitActor(ox, oy, oz, dx, dy, dz, actor, hit) {
   return hit;
 }
 
-// Apply damage with armour absorption (armour halves the damage and wears
-// down). Returns true when the actor dies. Kill bookkeeping, feed and sound
-// belong to the caller, which knows the weapon and the match state.
-export function hurtActor(actor, rawDamage) {
+// Apply damage through armour. A weapon's penetration `pen` (0..1) is the
+// share of damage armour cannot stop: armour negates up to (1 - pen) of the
+// hit, wearing down by what it negates, and the rest reaches health. A
+// rifle (pen 0.75) therefore chews through a vest a pistol (pen 0.5, the
+// default) barely dents. Returns true when the actor dies. Kill
+// bookkeeping, feed and sound belong to the caller.
+export function hurtActor(actor, rawDamage, pen = 0.5) {
   let dmg = rawDamage;
   if (actor.armorHp > 0) {
-    const absorbed = Math.min(actor.armorHp, dmg * 0.5);
+    const absorbed = Math.min(actor.armorHp, dmg * (1 - pen));
     actor.armorHp -= absorbed;
     dmg -= absorbed;
   }

@@ -1,15 +1,20 @@
 // Bot brains: perception, team plans and a small state machine per bot.
 // A bot perceives the world the way a player does — through a vision cone
-// with line-of-sight, and through hearing (gunfire and the plant are sound
-// events on G.soundEvents). It remembers where it last saw each enemy, walks
-// the waypoint graph to its objective, holds angles when defending, plants or
-// defuses the charge when that is its job, and falls back when badly hurt.
-// In a fight it fires disciplined bursts: its aim error grows while it moves
-// and shrinks when it stops, mirroring the spread model its bullets obey.
+// with line-of-sight, and through hearing: every noise in the world is an
+// event on the hearing bus (bus.js), and a bot only reacts to fresh enemy
+// noise inside its range. Sightings are published to G.spotted (the HUD
+// minimap reads them) and called out on team radio (radio.js). Each round
+// the plan assigns named roles — attackers: entry (carries the charge),
+// support (flashes the site entry), flex (trades behind the entry), lurker
+// (mid, late); defenders: two anchors per site and a flex rotating through
+// mid. In a fight a bot fires disciplined bursts: its aim error grows while
+// it moves and shrinks when it stops, mirroring the spread model its
+// bullets obey.
 import * as THREE from 'three';
 import { SITES, HOLD_POINTS, findPath, makePathScratch, losClear, siteAt } from './map.js';
 import { eyePos, lookDir } from './actor.js';
 import { WEAPONS, activeInstance, fireHitscan, startReload, throwGrenade } from './weapons.js';
+import { zoneName } from './radio.js';
 
 const FOV_COS = Math.cos(1.05); // ~120 degree total vision cone
 const SIGHT_RANGE = 46;
@@ -23,7 +28,12 @@ const _scratch = makePathScratch();
 
 export function createBrain(actor, role) {
   return {
-    role,                    // 'attack' | 'defend' | 'mid' | 'lurk'
+    role,                    // movement family: 'attack' | 'defend' | 'mid' | 'lurk'
+    planRole: 'flex',        // named plan role: entry|support|flex|lurker|anchor
+    radioAt: 0,              // radio cooldown: next time a callout may go out
+    objCallAt: -99,          // last plant/defuse callout (channel can churn)
+    hurtCalled: false,       // the low-health callout went out this round
+    utilityUsed: false,      // the support's entry flash is spent this round
     state: 'advance',
     targetPos: { x: actor.pos.x, z: actor.pos.z },
     holdPos: null,
@@ -47,40 +57,51 @@ export function createBrain(actor, role) {
   };
 }
 
-// Per-round team plans. Attackers pick a site (the carrier leads, one bot may
-// lurk through mid); defenders split 2/1/1 across A, mid and B. Called by
-// rounds.js at every round start; positions come from HOLD_POINTS so the
-// defence sets up on real angles, not on the objective itself.
+// Per-round team plans for the 5v5. Attackers pick a site and stack roles on
+// it: the entry carries the charge and leads, support plays behind him with
+// the entry flash, flex trades, the lurker works mid late. The human player
+// is the fifth attacker and plays free — a bot still carries. Defenders
+// split 2/2/1: two anchors on each site, one flex holding mid who rotates
+// to whichever site the noise bus reports. Called by rounds.js at every
+// round start; positions come from HOLD_POINTS so the defence sets up on
+// real angles, not on the objective itself.
+const ATTACK_ROLES = ['entry', 'support', 'flex', 'lurker'];
 export function assignPlans(G, rng) {
   const attackers = G.actors.filter((a) => a.team === 'ember');
   const defenders = G.actors.filter((a) => a.team === 'warden');
   const site = rng.chance(0.55) ? 'A' : 'B';
   G.plan = { site, carrier: null };
-  attackers.forEach((a, i) => {
-    if (!a.bot) return;
-    if (i === 0) { a.bot.hasCharge = true; G.plan.carrier = a; a.bot.role = 'attack'; }
-    else if (i === attackers.length - 1 && attackers.length > 2) a.bot.role = 'lurk';
-    else a.bot.role = 'attack';
+  const emberBots = attackers.filter((a) => a.bot);
+  emberBots.forEach((a, i) => {
+    const planRole = ATTACK_ROLES[i % ATTACK_ROLES.length];
+    a.bot.planRole = planRole;
+    a.bot.role = planRole === 'lurker' ? 'lurk' : 'attack';
+    a.bot.hasCharge = planRole === 'entry';
+    if (a.bot.hasCharge) G.plan.carrier = a;
     a.bot.state = 'advance';
     a.bot.enemy = null;
     a.bot.path = null;
+    a.bot.hurtCalled = false;
+    a.bot.utilityUsed = false;
   });
-  const playerBot = attackers.find((a) => a.isPlayer);
-  if (playerBot) G.plan.carrier = null; // the human carries by choice: charge waits at spawn
-  defenders.forEach((a, i) => {
-    if (!a.bot) return;
-    a.bot.role = i < 2 ? 'defend' : (i === 2 ? 'mid' : 'defend');
-    const pool = i < 2 ? HOLD_POINTS.A : (i === 2 ? HOLD_POINTS.mid : HOLD_POINTS.B);
-    a.bot.holdPos = pool[i % pool.length];
+  const DEFENCE = [
+    { planRole: 'anchor', role: 'defend', pool: HOLD_POINTS.A },
+    { planRole: 'anchor', role: 'defend', pool: HOLD_POINTS.A },
+    { planRole: 'anchor', role: 'defend', pool: HOLD_POINTS.B },
+    { planRole: 'anchor', role: 'defend', pool: HOLD_POINTS.B },
+    { planRole: 'flex', role: 'mid', pool: HOLD_POINTS.mid },
+  ];
+  defenders.filter((a) => a.bot).forEach((a, i) => {
+    const post = DEFENCE[i % DEFENCE.length];
+    a.bot.planRole = post.planRole;
+    a.bot.role = post.role;
+    a.bot.holdPos = post.pool[i % 2] || post.pool[0];
     a.bot.state = 'advance';
     a.bot.enemy = null;
     a.bot.path = null;
+    a.bot.hurtCalled = false;
+    a.bot.utilityUsed = false;
   });
-  // If the player is attacking, a bot carries instead of nobody.
-  if (playerBot) {
-    const carrier = attackers.find((a) => a.bot);
-    if (carrier) { carrier.bot.hasCharge = true; carrier.bot.role = 'attack'; G.plan.carrier = carrier; }
-  }
 }
 
 function visible(G, bot, other) {
@@ -103,8 +124,9 @@ function visible(G, bot, other) {
 function perceive(G, actor, dt) {
   const bot = actor.bot;
   bot.thinkAt -= dt;
-  // Hearing is checked every step (cheap, few events); vision on a tick.
-  for (const ev of G.soundEvents) {
+  // Hearing is checked every step off the bus (cheap, few events); vision
+  // runs on a tick. Heard enemy noise turns a holding bot to investigate.
+  for (const ev of G.bus.events) {
     if (ev.team === actor.team || ev.time < G.time - 0.4) continue;
     const d = Math.hypot(ev.x - actor.pos.x, ev.z - actor.pos.z);
     if (d < HEAR_RANGE && d < ev.radius + 12) {
@@ -127,9 +149,16 @@ function perceive(G, actor, dt) {
     }
   }
   if (best) {
-    if (bot.enemy !== best) { bot.enemy = best; bot.reactedAt = G.time; }
+    if (bot.enemy !== best) {
+      bot.enemy = best;
+      bot.reactedAt = G.time;
+      // First contact is called on the radio and published as a spotting:
+      // the whole team (and the player's minimap) learns the zone.
+      G.radio.say(actor, `Contact ${zoneName(best.pos.x, best.pos.z)}!`);
+    }
     bot.lastSeenPos.x = best.pos.x; bot.lastSeenPos.z = best.pos.z;
     bot.lastSeenAt = G.time;
+    G.spotted.set(best.id, { x: best.pos.x, z: best.pos.z, at: G.time });
   } else if (bot.enemy && (!bot.enemy.alive || G.time - bot.lastSeenAt > 1.6)) {
     bot.enemy = null;
   }
@@ -144,6 +173,30 @@ export function stepBot(G, actor, dt, wish) {
 
   const phase = G.round.phase;
   const planted = phase === 'planted';
+
+  // Badly hurt and still standing: one callout, then the retreat below.
+  if (actor.hp < 30 && !bot.hurtCalled) {
+    bot.hurtCalled = true;
+    G.radio.say(actor, "I'm hit — falling back");
+  }
+
+  // Support utility: the entry flash goes in just before the carrier hits
+  // the site — aimed over the plant spot, called on the radio, once a round.
+  if (bot.planRole === 'support' && !bot.utilityUsed && actor.team === 'ember' &&
+      phase === 'live' && actor.loadout.grenades.includes('flash')) {
+    const site = SITES[G.plan.site];
+    const carrier = G.plan.carrier;
+    const dSite = Math.hypot(site.plantX - actor.pos.x, site.plantZ - actor.pos.z);
+    const dCarrier = carrier && carrier.alive
+      ? Math.hypot(site.plantX - carrier.pos.x, site.plantZ - carrier.pos.z) : 99;
+    if (dSite < 17 && dCarrier < 12) {
+      bot.utilityUsed = true;
+      actor.yaw = Math.atan2(-(site.plantX - actor.pos.x), -(site.plantZ - actor.pos.z));
+      actor.pitch = 0.32;
+      if (throwGrenade(G, actor, 'flash')) G.radio.say(actor, 'Flashing in — go!', true);
+      actor.pitch = 0;
+    }
+  }
 
   // --- choose a goal from state and team plan ------------------------------
   let goal = null;
@@ -336,12 +389,15 @@ function combatAct(G, actor, dt) {
   turnToward(actor, targetYaw, dt, 7.5);
   actor.pitch += THREE.MathUtils.clamp(targetPitch - actor.pitch, -5 * dt, 5 * dt);
 
-  // A grenade before the first burst, when the enemy is mid-range and grouped
-  // near cover: frags for damage, flashes when pushing a held angle.
+  // A grenade before the first burst, when the enemy is mid-range: a frag
+  // onto the spotted position if the bot carries one. The support's flash
+  // is saved for the site entry (see stepBot) and never spent here.
   if (bot.grenadeAt < G.time && actor.loadout.grenades.length && settle >= 1) {
     const dist = actor.pos.distanceTo(foe.pos);
-    if (dist > 8 && dist < 20 && G.rng.chance(0.5)) {
-      throwGrenade(G, actor, actor.loadout.grenades[0]);
+    const kind = actor.loadout.grenades.includes('frag') ? 'frag' : actor.loadout.grenades[0];
+    const savedFlash = kind === 'flash' && bot.planRole === 'support' && !bot.utilityUsed;
+    if (!savedFlash && dist > 8 && dist < 20 && G.rng.chance(0.5)) {
+      throwGrenade(G, actor, kind);
       bot.grenadeAt = G.time + 6;
       return;
     }

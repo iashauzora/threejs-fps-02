@@ -1,7 +1,23 @@
-// Foundry District: boot, the fixed-step simulation loop, the local player's
-// controller, and the deterministic screenshot setups. The simulation always
-// advances in 1/60 steps from an accumulator; rendering happens per frame and
-// only reads state. One state object, G, is shared by every module.
+// Foundry District — design overview.
+// A round-based tactical FPS, five a side, on one original map. Systems:
+//   rounds/economy  rounds.js — buy/live/planted/end phases, per-role bot
+//                   buys, plant/defuse channels, loss-streak money.
+//   bot plans       bots.js — named roles (entry, support, flex, lurker,
+//                   anchor) on a waypoint graph; vision cones + hearing.
+//   hearing bus     bus.js — every shot, blast and plant is a noise event;
+//                   perception and radio both read the one bus.
+//   team radio      radio.js — plan calls, contact callouts naming zones,
+//                   plant/defuse/win calls, drawn in the HUD radio log.
+//   minimap         minimap.js — sites, geometry, teammates, fresh enemy
+//                   spottings (published by brains to G.spotted), charge.
+//   gunplay         weapons.js + actor.js — spread/recoil model, per-weapon
+//                   armour penetration, three hitbox bands, grenade physics.
+//   world           world.js + map.js — one collider list drives rendering,
+//                   collision, line-of-sight and pathing alike.
+// Boot, the fixed-step simulation loop, the local player's controller, and
+// the deterministic screenshot setups live here. The simulation always
+// advances in 1/60 steps from an accumulator; rendering happens per frame
+// and only reads state. One state object, G, is shared by every module.
 //
 // ?shot=start|buy|play|end&seed=N composes one deterministic frame (no
 // pointer lock, no timers), renders it, freezes, and sets window.__shotReady.
@@ -20,6 +36,9 @@ import {
   stepReloads, throwGrenade, stepGrenades, currentSpreadDeg, createViewmodel,
 } from './weapons.js';
 import { createBrain, stepBot } from './bots.js';
+import { createBus } from './bus.js';
+import { createRadio } from './radio.js';
+import { createMinimap } from './minimap.js';
 import {
   createMatch, startRound, stepRound, buyWeapon, buyArmor, buyGrenade,
   requestPlant, requestDefuse, BUY_TIME,
@@ -59,7 +78,9 @@ const G = {
   hud: createHud(),
   colliders: COLLIDERS,
   grenades: [],
-  soundEvents: [],
+  bus: createBus(),       // hearing bus: all noise events (bus.js)
+  spotted: new Map(),     // actorId -> {x, z, at}: team sightings for the minimap
+  radio: null,            // wired just below (needs G.hud and G.audio first)
   grenadeGeo: new THREE.SphereGeometry(0.11, 10, 8),
   grenadeMats: {
     frag: new THREE.MeshStandardMaterial({ color: 0x3d4436, roughness: 0.6 }),
@@ -73,10 +94,13 @@ const G = {
   onKill: (attacker, victim, headshot, def) => onKill(attacker, victim, headshot, def),
 };
 
+G.radio = createRadio(G);
+const minimap = createMinimap(G);
+
 // --- cast -----------------------------------------------------------------------
 
-const EMBER_BOTS = ['Vex', 'Ondo', 'Pell'];
-const WARDEN_BOTS = ['Sable', 'Rurik', 'Tamsin', 'Yara'];
+const EMBER_BOTS = ['Vex', 'Ondo', 'Pell', 'Sorin'];
+const WARDEN_BOTS = ['Sable', 'Rurik', 'Tamsin', 'Yara', 'Mira'];
 
 const player = createActor('ember', 'You', true);
 player.loadout = makeLoadout();
@@ -109,7 +133,9 @@ function onKill(attacker, victim, headshot, def) {
     attacker.kills++;
     attacker.money = Math.min(16000, attacker.money + 300);
     if (attacker.isPlayer) G.audio.kill();
+    if (attacker.bot) G.radio.say(attacker, headshot ? 'Target down — clean' : 'Target down');
   }
+  if (victim.bot) G.spotted.delete(victim.id);
   if (victim.bot && victim.bot.hasCharge) {
     // The charge passes to the nearest living Ember bot.
     victim.bot.hasCharge = false;
@@ -314,10 +340,8 @@ function step(dt) {
   stepPlayer(dt);
   stepReloads(G, dt);
 
-  // Sound events age out fast; bots only hear the fresh ones.
-  for (let i = G.soundEvents.length - 1; i >= 0; i--) {
-    if (G.time - G.soundEvents[i].time > 0.5) G.soundEvents.splice(i, 1);
-  }
+  // Bus events age out fast; bots only hear the fresh ones.
+  G.bus.step(G.time);
 
   // Camera: the player's eyes, or a living teammate's when the player is down.
   const viewActor = player.alive ? player : (G.actors.find((a) => a.team === 'ember' && a.alive && a.bot) || player);
@@ -379,6 +403,7 @@ function frame(now) {
   }
   G.effects.update(Math.min(0.05, dtMs / 1000));
   G.hud.update();
+  minimap.draw();
   renderer.render(scene, camera);
 }
 
@@ -415,14 +440,31 @@ function setupShot(name) {
     giveKit(emberBots[0], 'dart', 0, false);
     place(emberBots[0], -8.5, -3.6, -Math.PI / 2);
     place(emberBots[1], -13.5, 5.5, -Math.PI / 2);
+    place(emberBots[2], -4, -3.5, -Math.PI / 2);
+    place(emberBots[3], -12, 8.5, -Math.PI / 2);
     place(wardens[0], 14, -4.5, Math.PI / 2);
     place(wardens[1], 17.5, 2.5, Math.PI / 2);
+    place(wardens[2], 12, -9.5, Math.PI / 2);
+    place(wardens[3], 24, -14, Math.PI / 2);
+    place(wardens[4], 22, 12, Math.PI / 2);
+    G.spotted.set(wardens[0].id, { x: wardens[0].pos.x, z: wardens[0].pos.z, at: G.time });
+    // The plan call went out in startRound; support answers it.
+    G.radio.say(emberBots[1], 'Copy — flash ready', true);
     G.hud.banner('ROUND 1', 'Foundry District — plant at the Smelter or the Depot', 30);
     const eye = new THREE.Vector3(); eyePos(player, eye);
     camera.position.copy(eye);
     camera.rotation.set(player.pitch, player.yaw, 0);
   } else if (name === 'buy') {
     player.money = 4600;
+    giveKit(emberBots[0], 'longarm', 650, true, ['frag']);
+    giveKit(emberBots[1], 'dart', 650, false, ['flash']);
+    giveKit(emberBots[2], 'dart', 0, false);
+    giveKit(emberBots[3], 'rook', 650, false);
+    place(emberBots[0], -26, -5, -Math.PI / 2);
+    place(emberBots[1], -27, 3, -Math.PI / 2);
+    place(emberBots[2], -24, 0.5, -Math.PI / 2);
+    place(emberBots[3], -28, -1.5, -Math.PI / 2);
+    G.radio.say(emberBots[0], 'Rifles out — I take point', true);
     G.hud.showBuy(player, G.round);
     camera.position.set(player.pos.x, 1.62, player.pos.z);
     camera.rotation.set(0, player.yaw, 0);
@@ -444,10 +486,20 @@ function setupShot(name) {
     place(w0, 5.5, 1.8, Math.PI / 2);
     place(w1, 11.5, 5.2, Math.PI / 2 - 0.3);
     w0.bot.enemy = player; w1.bot.enemy = player;
-    place(emberBots[0], -7.5, 7.6, -Math.PI / 2);
+    place(emberBots[0], -0.5, 5.2, -Math.PI / 2);
     giveKit(emberBots[0], 'dart', 0, false);
     place(emberBots[1], -8.5, -1.5, -Math.PI / 2);
+    place(emberBots[2], -9.5, 10.5, -Math.PI / 2);
+    giveKit(emberBots[2], 'dart', 0, false);
     place(wardens[2], 16, -8, Math.PI / 2);
+    place(wardens[3], 7.5, 0.5, Math.PI / 2 + 0.3);
+    giveKit(wardens[3], 'dart', 0, false);
+    // Both visible Wardens are spotted: the minimap shows them in red.
+    G.spotted.set(w0.id, { x: w0.pos.x, z: w0.pos.z, at: G.time });
+    G.spotted.set(wardens[3].id, { x: wardens[3].pos.x, z: wardens[3].pos.z, at: G.time });
+    G.radio.say(emberBots[1], 'Contact mid — two crossing!', true);
+    G.radio.say(emberBots[0], 'Holding south — cover me', true);
+    G.radio.say(wardens[0], 'Eyes on mid, engaging', true);
     // A tracer mid-flight from the player's muzzle toward w0, flash lit.
     const eye = new THREE.Vector3(); eyePos(player, eye);
     const dir = new THREE.Vector3(); lookDir(player, dir);
@@ -456,17 +508,18 @@ function setupShot(name) {
     G.effects.tracer(muzzle, hit);
     G.effects.muzzleFlash(muzzle, dir);
     G.effects.impact(hit, true);
-    G.hud.kill('You', 'Tamsin', false, 'ember');
-    G.hud.kill('Sable', 'Ondo', false, 'warden');
-    wardens[3].alive = false; wardens[3].hp = 0;
-    emberBots[2].alive = false; emberBots[2].hp = 0;
+    G.hud.kill('You', 'Mira', false, 'ember');
+    G.hud.kill('Sable', 'Sorin', false, 'warden');
+    wardens[4].alive = false; wardens[4].hp = 0;
+    emberBots[3].alive = false; emberBots[3].hp = 0;
     camera.position.copy(eye);
     camera.rotation.set(player.pitch, player.yaw, 0);
   } else if (name === 'end') {
     G.round.phase = 'end';
     G.round.score.ember = 5; G.round.score.warden = 3;
     G.round.number = 8;
-    G.charge.state = 'detonated';
+    G.charge.state = 'planted'; // still on the minimap as it goes off
+    G.charge.x = SITES.A.plantX; G.charge.z = SITES.A.plantZ;
     giveKit(player, 'longarm', 3900, true);
     viewmodel.build('longarm');
     place(player, 19.2, -10.2, -0.93); // facing the plant spot on site A
@@ -474,11 +527,14 @@ function setupShot(name) {
     place(emberBots[0], 21, -16.5, -Math.PI / 2);
     giveKit(emberBots[0], 'longarm', 0, true);
     place(emberBots[1], 16.5, -12, -Math.PI / 2);
+    place(emberBots[2], 18, -7.5, -Math.PI / 2);
     wardens[0].alive = false; wardens[0].hp = 0; place(wardens[0], 24, -13, 0);
     wardens[1].alive = false; wardens[1].hp = 0; place(wardens[1], 20.5, -18.5, 0);
     place(wardens[2], 27, -6, Math.PI / 2);
     G.effects.explosion(new THREE.Vector3(SITES.A.plantX, 0.4, SITES.A.plantZ));
     G.hud.roundEnd('ember', 'Charge detonated', G.round.score);
+    G.radio.say(emberBots[0], 'Charge planted — hold positions', true);
+    G.radio.say(emberBots[1], 'Site is ours — round won', true);
     const eye = new THREE.Vector3(); eyePos(player, eye);
     camera.position.copy(eye);
     camera.rotation.set(player.pitch, player.yaw, 0);
@@ -493,6 +549,7 @@ function setupShot(name) {
   let ea = 0, wa = 0;
   for (const a of G.actors) if (a.alive) { if (a.team === 'ember') ea++; else wa++; }
   G.hud.setAlive(ea, wa);
+  minimap.draw(true);
   renderer.render(scene, camera);
   renderer.render(scene, camera);
   frozenFrame = true;

@@ -92,5 +92,7 @@ export function createAudio() {
     roundWin() { tone(523, 0.12, 0.2, 'triangle'); tone(659, 0.12, 0.2, 'triangle', 0.11); tone(784, 0.22, 0.22, 'triangle', 0.22); },
     roundLose() { tone(392, 0.14, 0.2, 'triangle'); tone(330, 0.14, 0.2, 'triangle', 0.13); tone(262, 0.26, 0.22, 'triangle', 0.26); },
     step(dist) { noise(0.05, 500, 0.05 / (1 + dist * 0.2), 'lowpass'); },
+    // Radio squelch: a clipped static tick under each bot callout.
+    radioBlip() { noise(0.045, 1500, 0.1, 'bandpass'); tone(1250, 0.03, 0.05, 'square', 0.01); },
   };
 }
